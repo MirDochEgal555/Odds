@@ -207,6 +207,7 @@ def heuristic_score(text: str, vibe: str, names_list):
     if vibe == "chill" and re.search(r"\bshout|yell\b", text, re.I): s -= 0.5
     if "what are the odds" in text.lower(): s += 0.5
     if any(n in text for n in names_list): s += 0.3
+    #if re.search(r"\b")
     return s
 
 def llm_judge_score(text: str):
@@ -719,6 +720,25 @@ class App(tk.Tk):
             style.theme_use("sun-valley-dark")
         except Exception:
             style.theme_use(style.theme_use())
+
+        # ---- Dark app background ----
+        APP_BG = "#1f2937"   # dark grey (Tailwind slate-800-ish)
+
+        # root window (covers any gaps)
+        self.configure(bg=APP_BG)
+
+        # base ttk backgrounds
+        style.configure("TFrame", background=APP_BG)
+        style.configure("TLabel", background=APP_BG)
+
+        # ensure your custom label styles also use the dark bg
+        style.configure("Title.TLabel", background=APP_BG)
+        style.configure("Subtitle.TLabel", background=APP_BG)
+        style.configure("Help.TLabel", background=APP_BG)
+        style.configure("Question.TLabel", background=APP_BG)
+
+        style.configure("Card.TFrame", background="#111827")  # even darker
+
         style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
         style.configure("Subtitle.TLabel", font=("Segoe UI", 12))
         style.configure("Help.TLabel", font=("Segoe UI", 10), foreground="#555")
@@ -734,19 +754,19 @@ class App(tk.Tk):
         style.configure("Accent.TButton", font=("Segoe UI", 11, "bold"))
         style.map("Accent.TButton",
                 background=[("!disabled", "#8B5CF6"), ("active", "#7C3AED")],
-                foreground=[("!disabled", "white")])
+                foreground=[("!disabled", "black")])
 
         # Success / confirm button (green)
         style.configure("Success.TButton", font=("Segoe UI", 11, "bold"))
         style.map("Success.TButton",
                 background=[("!disabled", "#22C55E"), ("active", "#16A34A")],
-                foreground=[("!disabled", "white")])
+                foreground=[("!disabled", "black")])
 
         # Secondary / neutral button (gray)
-        style.configure("Secondary.TButton", font=("Segoe UI", 11))
+        style.configure("Secondary.TButton", font=("Segoe UI", 11, "bold"))
         style.map("Secondary.TButton",
                 background=[("!disabled", "#374151"), ("active", "#4B5563")],
-                foreground=[("!disabled", "white")])
+                foreground=[("!disabled", "black")])
 
         # Loading bar
         style.configure("Loading.Horizontal.TProgressbar",
@@ -929,6 +949,15 @@ class LoadGameScreen(ttk.Frame):
         self.list_frame.pack(fill="both", expand=False, padx=12)
 
         self.listbox = tk.Listbox(self.list_frame, height=8, activestyle="dotbox")
+        # match the dark background
+        self.listbox.configure(
+            bg="#1f2937",
+            fg="#e5e7eb",
+            highlightthickness=0,
+            selectbackground="#374151",
+            selectforeground="#ffffff",
+            relief="flat",
+        )
         sb = ttk.Scrollbar(self.list_frame, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=sb.set)
 
