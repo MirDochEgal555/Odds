@@ -112,6 +112,43 @@ def update_word_freqs(text: str, freqs: Counter):
         freqs[tok] += 1
 
 
+# ---------------- Keyword Helper ----------------
+_token_re_kw = re.compile(r"[a-z]{3,}")
+
+def _keyword_alignment_score(text: str, keywords_list) -> float:
+    """
+    Returns 0..1. Mixes token overlap with exact phrase hits:
+      - token component: fraction of keyword tokens present
+      - phrase component: fraction of full keyword phrases present
+    """
+    if not keywords_list:
+        return 0.0
+    t = text.lower()
+    text_tokens = set(_token_re_kw.findall(t))
+
+    phrases = []
+    kw_tokens = set()
+    for k in keywords_list:
+        k = k.lower().strip()
+        if not k:
+            continue
+        phrases.append(k)
+        kw_tokens.update(_token_re_kw.findall(k))
+
+    if not kw_tokens and not phrases:
+        return 0.0
+
+    # Token overlap (coverage of keyword tokens)
+    tok_cov = len(text_tokens & kw_tokens) / max(1, len(kw_tokens))
+
+    # Phrase hits (substring match, cheap and effective)
+    phrase_hits = sum(1 for p in phrases if p and p in t)
+    phrase_cov = phrase_hits / max(1, len(phrases))
+
+    # Blend: tweak 0.6/0.4 if you prefer
+    return 0.6 * tok_cov + 0.4 * phrase_cov
+
+
 # ---------------- tiny HTTP helpers ----------------
 def _ollama_chat(model: str, messages: list, temperature=0.8):
     req = urllib.request.Request(
@@ -201,7 +238,7 @@ def is_safe(t: str) -> bool:
     return not any(p.search(t) for p in BLOCKERS)
 
 # ---------------- heuristic judge + (optional) LLM judge ----------------
-def heuristic_score(text: str, vibe: str, names_list):
+def heuristic_score(text: str, vibe: str, names_list, keywords_list=None):
     s = 0.0
     L = len(text)
     if 35 <= L <= 120: s += 1.0
@@ -209,7 +246,8 @@ def heuristic_score(text: str, vibe: str, names_list):
     if vibe == "chill" and re.search(r"\bshout|yell\b", text, re.I): s -= 0.5
     if "what are the odds" in text.lower(): s += 0.5
     if any(n in text for n in names_list): s += 0.3
-    #if re.search(r"\b")
+    if keywords_list:
+        s += KW_ALPHA * _keyword_alignment_score(text, keywords_list)
     return s
 
 def llm_judge_score(text: str):
@@ -297,8 +335,8 @@ def pick_best(cands, ctx):
     if not cands:
         return None
     r_preds = reward_predict(cands)
+    h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"], ctx.get("keywords_list")) for t in cands]
     have_reward = any(p is not None for p in r_preds)
-    h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"]) for t in cands]
     try:
         llm_scores = [llm_judge_score(t) for t in cands]
     except Exception:
@@ -332,7 +370,8 @@ def rank_candidates_scored(cands_with_variant, ctx):
     texts = [t for _, t in cands_with_variant]
     r_preds = reward_predict(texts)
     have_reward = any(p is not None for p in r_preds)
-    h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"]) for t in texts]
+     h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"], ctx.get("keywords_list")) for t in texts]
+
     try:
         l_scores = [llm_judge_score(t) for t in texts]
     except Exception:
@@ -415,6 +454,8 @@ def ctx_from_players(players, prev_ctx=None, keywords=""):
     if prev_ctx is None:
         prev_ctx = DEFAULTS.copy()
     names = ", ".join(players) if players else prev_ctx.get("names", DEFAULTS["names"])
+    kw_str = keywords if keywords else prev_ctx.get("keywords", "")
+    kw_list = [k.strip() for k in kw_str.split(",") if k.strip()]
     base = {
         "language": prev_ctx.get("language", "en"),
         "vibe": prev_ctx.get("vibe", "chaotic"),
@@ -424,6 +465,7 @@ def ctx_from_players(players, prev_ctx=None, keywords=""):
         "names": names,
         "names_list": [n.strip() for n in names.split(",") if n.strip()],
         "keywords": keywords if keywords else prev_ctx.get("keywords", ""),
+        "keywords_list": kw_list,
     }
 
     return base
