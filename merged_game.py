@@ -33,10 +33,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 # ---------------- defaults (UI will override) ----------------
 DEFAULTS = dict(
     language="en",
-    vibe="chaotic",            # chill | silly | chaotic
+    vibe="silly",            # chill | silly | chaotic
     safety="Party",            # PG | PG13 | Party
     time=10,                   # minutes
-    location="spain, outdoor, after dinner",
+    location="outdoor, beach, bar, pool, club",
     names="Robin,Philipp,Marvin,Daniel,Lex,Tiberio,Sven,Leon,Lorenz",
     keywords="friendly",
 )
@@ -69,6 +69,8 @@ from collections import Counter
 
 WORD_FREQ_JSON = DATA / "word_freq.json"
 NOVELTY_ALPHA = float(os.getenv("ODDS_NOVELTY", "0.15"))  # 0 disables novelty
+KW_ALPHA = float(os.getenv("ODDS_KW", "1.0"))  # strength of keyword bonus in heuristic
+
 
 def load_word_freq():
     if WORD_FREQ_JSON.exists():
@@ -753,12 +755,6 @@ class App(tk.Tk):
         # cards / panels
         style.configure("Card.TFrame", background=self.CARD_BG)
 
-        # entries (light text on dark field)
-        style.configure("TEntry",
-                        fieldbackground=self.CARD_BG,
-                        foreground=self.FG,
-                        insertcolor=self.FG)
-
         # buttons: white text on colored backgrounds for contrast
         style.configure("Accent.TButton",   font=("Segoe UI", 11, "bold"))
         style.configure("Success.TButton",  font=("Segoe UI", 11, "bold"))
@@ -780,6 +776,50 @@ class App(tk.Tk):
         self.option_add("*Listbox.SelectBackground", self.NEUTRAL_A)
         self.option_add("*Listbox.SelectForeground", "#FFFFFF")
         self.option_add("*Listbox.Font",            ("Segoe UI", 11))
+
+                # --- subtle controls: slightly brighter than app bg ---
+        SUBTLE_BG       = "#2b3548"     # ~+6% over APP_BG
+        SUBTLE_BG_HOVER = "#32405a"
+
+        # Buttons (for Finished / Go Back)
+        style.configure("Subtle.TButton",
+                        background=SUBTLE_BG,
+                        foreground="#FFFFFF",
+                        relief="flat",
+                        padding=8)
+        style.map("Subtle.TButton",
+                  background=[("active", SUBTLE_BG_HOVER), ("pressed", SUBTLE_BG_HOVER), ("!disabled", SUBTLE_BG)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+
+        # Checkbutton (for "Rate Question")
+        style.configure("Subtle.TCheckbutton",
+                        background=SUBTLE_BG,
+                        foreground="#FFFFFF",
+                        padding=6)
+        style.map("Subtle.TCheckbutton",
+                  background=[("active", SUBTLE_BG_HOVER), ("!disabled", SUBTLE_BG)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+
+        # Radiobuttons (-2 .. 2)
+        style.configure("Subtle.TRadiobutton",
+                        background=SUBTLE_BG,
+                        foreground="#FFFFFF",
+                        padding=6)
+        style.map("Subtle.TRadiobutton",
+                  background=[("selected", SUBTLE_BG_HOVER), ("active", SUBTLE_BG_HOVER), ("!disabled", SUBTLE_BG)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+
+        # Field label for "Round keywords..."
+        style.configure("FieldLabel.TLabel",
+                        background=self.APP_BG,
+                        foreground=self.FG_SOFT)
+
+        # Entry: dark field, white text
+        style.configure("TEntry",
+                        fieldbackground="#263142",  # slightly brighter than APP_BG
+                        foreground="#FFFFFF",
+                        insertcolor="#FFFFFF")
+
 
     def show(self, name: str):
         frame = self.frames[name]
@@ -1165,13 +1205,15 @@ class LoadingScreen(ttk.Frame):
 
 
 class Collapsible(ttk.Frame):
-    """A small collapsible panel for the 'Rate Question' section."""
-    def __init__(self, parent, title="Section"):
+    def __init__(self, parent, title="Section", style="Subtle.TCheckbutton"):
         super().__init__(parent)
         self._open = tk.BooleanVar(value=False)
         bar = ttk.Frame(self)
         bar.pack(fill="x")
-        self.btn = ttk.Checkbutton(bar, text=title, variable=self._open, command=self._toggle, style="TCheckbutton")
+        self.btn = ttk.Checkbutton(
+            bar, text=title, variable=self._open,
+            command=self._toggle, style=style
+        )
         self.btn.pack(side="left", padx=2, pady=2)
         self.body = ttk.Frame(self)
         # initially collapsed
@@ -1211,24 +1253,21 @@ class QuestionScreen(ttk.Frame):
         )
         self.q_lbl.pack(anchor="w")
 
+        # keywords row
         kw_row = ttk.Frame(content)
         kw_row.pack(fill="x", pady=(8, 6))
-        ttk.Label(kw_row, text="Round keywords (comma-separated):").pack(side="left", padx=(0, 8))
-        self.kw_entry = ttk.Entry(kw_row)
+        ttk.Label(kw_row, text="Round keywords (comma-separated):", style="FieldLabel.TLabel")\
+           .pack(side="left", padx=(0, 8))
+        self.kw_entry = ttk.Entry(kw_row)  # picks up global TEntry style
         self.kw_entry.pack(side="left", fill="x", expand=True)
-        self.kw_hint = ttk.Label(
-            content,
-            text="These keywords are sent to the engine at round start.",
-            style="Help.TLabel",
-        )
-        self.kw_hint.pack(anchor="w", pady=(0, 8))
 
+        # actions
         actions = ttk.Frame(content)
         actions.pack(fill="x", pady=(8, 6))
 
-        self.start_btn = ttk.Button(actions, text="Start", command=self._start_clicked, style="Accent.TButton")
-        self.finish_btn = ttk.Button(actions, text="Finished", command=self._finished_clicked, style="Success.TButton")
-        self.back_btn = ttk.Button(actions, text="Go back", command=self._go_back_clicked, style="Secondary.TButton")
+        self.start_btn  = ttk.Button(actions, text="Start",     command=self._start_clicked,   style="Accent.TButton")
+        self.finish_btn = ttk.Button(actions, text="Finished",  command=self._finished_clicked, style="Subtle.TButton")
+        self.back_btn   = ttk.Button(actions, text="Go back",   command=self._go_back_clicked,  style="Subtle.TButton")
 
         self.start_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
         self.finish_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
@@ -1246,11 +1285,9 @@ class QuestionScreen(ttk.Frame):
         rate_row.pack(pady=(2, 4))
         for val in [-2, -1, 0, 1, 2]:
             b = ttk.Radiobutton(
-                rate_row,
-                text=str(val),
-                value=str(val),
-                variable=self.rating_var,
-                command=self._rated,
+                rate_row, text=str(val), value=str(val),
+                variable=self.rating_var, command=self._rated,
+                style="Subtle.TRadiobutton"
             )
             b.pack(side="left", padx=6, pady=4)
 
