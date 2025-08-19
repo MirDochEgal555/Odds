@@ -454,6 +454,9 @@ class App(tk.Tk):
         self.title("What are the odds...? — Game")
         self.geometry("800x560")
         self.minsize(720, 520)
+        self.round_total = 0     # total questions this round
+        self.round_index = 0     # 1-based index within the round
+
 
         # Shared state
         self.players = []
@@ -721,7 +724,9 @@ class LoadingScreen(ttk.Frame):
         self._use_real = bool(eng and hasattr(eng, "begin_fetch_questions") and hasattr(eng, "get_fetch_status"))
         if self._use_real:
             try:
-                eng.begin_fetch_questions(total=1)  # prefetch first question
+                total = max(1, len(self.controller.players) * 5)
+                eng.begin_fetch_questions(total=total)
+                self.subtitle.config(text=f"Fetching {total} questions…")
                 self.subtitle.config(text="Fetching questions…")
                 self._poll_real()
             except Exception as e:
@@ -838,6 +843,10 @@ class LoadingScreen(ttk.Frame):
             self.controller.current_question_text = None
             self.controller.frames["QuestionScreen"].q_lbl.config(text="No more questions available.")
 
+            # set counters for Round 1
+        self.controller.round_total = max(1, len(self.controller.players) * 5)
+        self.controller.round_index = 1
+        self.controller.started = False  # round hasn't started until user presses Start
         self.controller.show("QuestionScreen")
 
     def destroy(self):
@@ -952,12 +961,21 @@ class QuestionScreen(ttk.Frame):
         home_btn = ttk.Button(footer, text="⟵ Main Menu", command=lambda: controller.show("StartScreen"))
         home_btn.pack(side="right")
 
-    def on_show(self):
-        self.title.config(text=f"Round {self.controller.round}")
-        self.players_lbl.config(text=f"Players: {', '.join(self.controller.players)}")
+    def _update_question_view(self):
+        # Header: Round X : N players → M questions
+        n_players = len(self.controller.players)
+        self.title.config(
+            text=f"Round {self.controller.round} : {n_players} players \u2192 {self.controller.round_total} questions"
+        )
+        # Question line prefix "Question i/M: ..."
+        text = self.controller.current_question_text or ""
+        i = max(1, int(self.controller.round_index or 1))
+        m = max(1, int(self.controller.round_total or 1))
+        self.q_lbl.config(text=f"Question {i}/{m}: {text}")
 
-        if self.controller.current_question_text:
-            self.q_lbl.config(text=self.controller.current_question_text)
+
+    def on_show(self):
+        self._update_question_view()
 
         self.kw_entry.delete(0, tk.END)
         if self.controller.current_keywords:
@@ -1019,6 +1037,7 @@ class QuestionScreen(ttk.Frame):
         self._show_started_state()
 
     def _finished_clicked(self):
+        # Submit feedback exactly once per question
         keywords = self._parse_keywords(self.controller.current_keywords)
         if self.controller.engine and self.controller.current_question_id is not None:
             try:
@@ -1031,7 +1050,12 @@ class QuestionScreen(ttk.Frame):
                 )
             except Exception as e:
                 print(f"[UI] submit_feedback error: {e}")
-        self._next_round()
+        self.finish_btn.state(["disabled"])
+        self._next_question_in_round()
+        self.finish_btn.state(["!disabled"])
+        # Advance within round, or end-of-round prompt
+        self._next_question_in_round()
+
 
     def _next_round(self):
         self.controller.round += 1
@@ -1069,6 +1093,69 @@ class QuestionScreen(ttk.Frame):
             if self.back_btn.winfo_ismapped():
                 self.back_btn.forget()
 
+    def _next_question_in_round(self):
+        # If there are more questions in this round, consume next prefetched one
+        if self.controller.round_index < self.controller.round_total:
+            self.controller.round_index += 1
+            q = None
+            eng = self.controller.engine
+            if eng and hasattr(eng, "consume_prefetched_question"):
+                try:
+                    q = eng.consume_prefetched_question()
+                except Exception as e:
+                    print(f"[UI] consume_prefetched_question error: {e}")
+            if q is None and eng:
+                try:
+                    q = eng.get_next_question()
+                except Exception as e:
+                    print(f"[UI] get_next_question error: {e}")
+
+            if q:
+                self.controller.current_question_id = q.get("id")
+                self.controller.current_question_text = q.get("text")
+            else:
+                # If nothing came back, clamp the index and message
+                self.controller.current_question_id = None
+                self.controller.current_question_text = "No more questions available."
+
+            # Reset per-question UI
+            self.controller.rating = None
+            self.rating_var.set("")
+            self.feedback.config(text="")
+            # Keep the round running (Start should stay hidden, Finished visible)
+            self.status.config(text=f"Next question ({self.controller.round_index}/{self.controller.round_total}).")
+            self._show_started_state()
+            self._update_question_view()
+            return
+
+        # End of round
+        proceed = messagebox.askyesno(
+            "Round complete",
+            f"Round {self.controller.round} complete.\nProceed to Round {self.controller.round + 1}?"
+        )
+        if proceed:
+            self._begin_next_round()
+        else:
+            # Back to main menu (or you could just leave them on the last screen)
+            self.controller.show("StartScreen")
+
+    def _begin_next_round(self):
+        # Prepare next round counters/state
+        self.controller.round += 1
+        self.controller.round_index = 0
+        self.controller.round_total = 0
+        self.controller.started = False
+        self.controller.rating = None
+        self.rating_var.set("")
+        self.feedback.config(text="")
+        self.controller.current_keywords = ""
+        self.kw_entry.state(["!disabled"])
+        self.kw_entry.delete(0, tk.END)
+
+        # Show loading to prefetch the next batch (players × 5) with real progress
+        self.controller.show("LoadingScreen")
+
+
     def _go_back_clicked(self):
         self.controller.started = False
         self.status.config(text="Returned to pre-start state.")
@@ -1079,18 +1166,8 @@ class QuestionScreen(ttk.Frame):
         self.controller.rating = val
         self.feedback.config(text=self._rating_text(val))
         self.status.config(text=f"Rating saved: {val}")
-        if self.controller.engine and self.controller.current_question_id is not None:
-            keywords = self._parse_keywords(self.controller.current_keywords)
-            try:
-                self.controller.engine.submit_feedback(
-                    round_number=self.controller.round,
-                    question_id=self.controller.current_question_id,
-                    rating=val,
-                    players=self.controller.players,
-                    keywords=keywords,
-                )
-            except Exception as e:
-                print(f"[UI] submit_feedback (immediate) error: {e}")
+        # (removed) do not send to engine here to avoid double feedback
+
 
     @staticmethod
     def _rating_text(val):
