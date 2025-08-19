@@ -64,6 +64,52 @@ REWARD_COL_INDEX = None
 REWARD_IDF = None
 REWARD_NFEATS = None
 
+# ---------------- Novelty score helpers -----------
+from collections import Counter
+
+WORD_FREQ_JSON = DATA / "word_freq.json"
+NOVELTY_ALPHA = float(os.getenv("ODDS_NOVELTY", "0.15"))  # 0 disables novelty
+
+def load_word_freq():
+    if WORD_FREQ_JSON.exists():
+        try:
+            return Counter(json.loads(WORD_FREQ_JSON.read_text()))
+        except Exception:
+            pass
+    return Counter()
+
+def save_word_freq(freqs: Counter):
+    WORD_FREQ_JSON.write_text(json.dumps(freqs, indent=2))
+
+# very small stoplist + game boilerplate words we don't want to count
+STOPWORDS = set("""
+a an the and or to of in on for with as is are be you your we us our at by from it this that these those
+what odds odds? odds! odds. are the you what are the odds you
+""".split())
+
+_token_re = re.compile(r"[a-z]{3,}")
+
+def tokenize_words(t: str):
+    toks = [w for w in _token_re.findall(t.lower()) if w not in STOPWORDS]
+    return toks
+
+def novelty_score(text: str, freqs: Counter, sat: int = 8) -> float:
+    """
+    Average 'rarity' of the tokens in text.
+    For each token: score = sat / (freq + sat)  -> unseen=1.0, freq>>sat ~ 0
+    Returns 0..1 (higher = more novel).
+    """
+    toks = tokenize_words(text)
+    if not toks:
+        return 0.0
+    vals = [sat / (freqs.get(tok, 0) + sat) for tok in toks]
+    return sum(vals) / len(vals)
+
+def update_word_freqs(text: str, freqs: Counter):
+    for tok in tokenize_words(text):
+        freqs[tok] += 1
+
+
 # ---------------- tiny HTTP helpers ----------------
 def _ollama_chat(model: str, messages: list, temperature=0.8):
     req = urllib.request.Request(
@@ -244,48 +290,68 @@ def generate_candidates(ctx, variant_name, tmpl, temp):
     return out
 
 def pick_best(cands, ctx):
-    """Combine reward model, heuristic, and optional LLM judge."""
-    if not cands: return None
+    """Combine reward model, heuristic, optional LLM judge, and novelty bonus."""
+    if not cands:
+        return None
     r_preds = reward_predict(cands)
     have_reward = any(p is not None for p in r_preds)
     h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"]) for t in cands]
     try:
         llm_scores = [llm_judge_score(t) for t in cands]
     except Exception:
-        llm_scores = [0.5]*len(cands)
+        llm_scores = [0.5] * len(cands)
+
+    # --- NEW: novelty per candidate; pull freqs from a module-level cache if present
+    # Fallback to empty if Engine hasn't loaded yet (e.g., in a unit test)
+    try:
+        freqs = ENGINE.word_freqs  # populated in Engine.__init__
+    except Exception:
+        freqs = Counter()
+
+    novelty_scores = [novelty_score(t, freqs) for t in cands]
+
     fused = []
-    for i,t in enumerate(cands):
+    for i, t in enumerate(cands):
         rp = r_preds[i] if have_reward else 0.5
         hs = h_scores[i]
         ls = llm_scores[i]
-        score = (0.55*rp + 0.25*ls + 0.20*(hs/2.0))
+        ns = novelty_scores[i]  # 0..1
+        base = (0.55 * rp + 0.25 * ls + 0.20 * (hs / 2.0))
+        score = base + NOVELTY_ALPHA * ns
         fused.append((score, t))
-    fused.sort(reverse=True, key=lambda x:x[0])
+    fused.sort(reverse=True, key=lambda x: x[0])
     return fused[0][1]
 
-def rank_candidates_scored(variant_text_pairs, ctx):
-    """
-    Input: [(variant, text), ...]
-    Output: [(score, variant, text)] sorted desc by score.
-    Uses the same scoring blend as pick_best().
-    """
-    texts = [t for _, t in variant_text_pairs]
+def rank_candidates_scored(cands_with_variant, ctx):
+    print("rank_candidates_scored started at: ", datetime.utcnow().isoformat())
+    if not cands_with_variant:
+        return []
+    texts = [t for _, t in cands_with_variant]
     r_preds = reward_predict(texts)
     have_reward = any(p is not None for p in r_preds)
     h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"]) for t in texts]
     try:
-        llm_scores = [llm_judge_score(t) for t in texts]
+        l_scores = [llm_judge_score(t) for t in texts]
     except Exception:
-        llm_scores = [0.5] * len(texts)
+        l_scores = [0.5] * len(texts)
+
+    try:
+        freqs = ENGINE.word_freqs
+    except Exception:
+        freqs = Counter()
+    n_scores = [novelty_score(t, freqs) for t in texts]
 
     ranked = []
-    for i, (variant, text) in enumerate(variant_text_pairs):
-        rp = r_preds[i] if have_reward and r_preds[i] is not None else 0.5
+    for i, (variant, text) in enumerate(cands_with_variant):
+        rp = r_preds[i] if have_reward else 0.5
         hs = h_scores[i]
-        ls = llm_scores[i]
-        score = (0.55 * rp + 0.25 * ls + 0.20 * (hs / 2.0))
+        ls = l_scores[i]
+        ns = n_scores[i]
+        base = (0.55 * rp + 0.25 * ls + 0.20 * (hs / 2.0))
+        score = base + NOVELTY_ALPHA * ns
         ranked.append((score, variant, text))
     ranked.sort(reverse=True, key=lambda x: x[0])
+    print("rank_candidates_scored ended at: ", datetime.utcnow().isoformat())
     return ranked
 
 
@@ -356,6 +422,7 @@ def ctx_from_players(players, prev_ctx=None, keywords=""):
         "names_list": [n.strip() for n in names.split(",") if n.strip()],
         "keywords": keywords if keywords else prev_ctx.get("keywords", ""),
     }
+
     return base
 
 class Engine:
@@ -374,6 +441,9 @@ class Engine:
         self.last_keywords = ""
         self.weights = load_weights()
         self.ctx = ctx_from_players(self.players, DEFAULTS, "")
+        for n in self.ctx["names_list"]:
+            STOPWORDS.add(n.lower())
+        self.word_freqs = load_word_freq()
         self._qid_counter = 0
                 # --- prefetch/progress state for the loading screen ---
         self._fetch_lock = threading.Lock()
@@ -561,6 +631,10 @@ class Engine:
         # store last variant for feedback weighting
         self._last_variant = variant
         self._last_text = dare
+
+        update_word_freqs(dare, self.word_freqs)
+        save_word_freq(self.word_freqs)
+
         return {"id": qid, "text": dare}
 
     def submit_keywords(self, round_number, question_id, keywords, players):
