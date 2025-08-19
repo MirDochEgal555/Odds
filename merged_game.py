@@ -54,6 +54,13 @@ VARIANTS = [
     ("v4_spicy", PROMPT_BASE + "\n\n" + PROMPT_SPICY, 0.9)
 ]
 
+# --- reward model cache (speeds up + avoids repeated loads)
+REWARD_MODEL = None
+REWARD_VOCAB_OBJ = None
+REWARD_COL_INDEX = None
+REWARD_IDF = None
+REWARD_NFEATS = None
+
 # ---------------- tiny HTTP helpers ----------------
 def _ollama_chat(model: str, messages: list, temperature=0.8):
     req = urllib.request.Request(
@@ -158,38 +165,60 @@ def llm_judge_score(text: str):
     return 0.5
 
 # ---------------- reward model (train from your ratings) ----------------
-def reward_predict(texts):
-    """If trained, predict scores (higher is better); else empty list."""
-    if not REWARD_FILE.exists() or not REWARD_VOCAB.exists():
-        return [None]*len(texts)
+def load_reward_cache():
+    """Load reward model & vocab once into globals."""
+    global REWARD_MODEL, REWARD_VOCAB_OBJ, REWARD_COL_INDEX, REWARD_IDF, REWARD_NFEATS
+    if not (REWARD_FILE.exists() and REWARD_VOCAB.exists()):
+        return
+    if REWARD_MODEL is not None:
+        return
     from joblib import load
-    model = load(REWARD_FILE)
-    vocab = json.loads(REWARD_VOCAB.read_text())
-    # super-lightweight TF-IDF transform (manual)
-    from math import log
-    def tokenize(t):
-        return re.findall(r"[a-zA-Z]{2,}", t.lower())
-    # build tf
-    X = []
-    for t in texts:
-        toks = tokenize(t)
+    REWARD_MODEL = load(REWARD_FILE)
+    REWARD_VOCAB_OBJ = json.loads(REWARD_VOCAB.read_text())
+    order = REWARD_VOCAB_OBJ["__order__"]          # list of tokens in fixed order
+    REWARD_COL_INDEX = {tok: i for i, tok in enumerate(order)}
+    REWARD_IDF = REWARD_VOCAB_OBJ.get("__idf__", {})
+    REWARD_NFEATS = len(order)
+
+def reward_predict(texts):
+    """
+    Return scores from the ridge reward model, or 0.5 if model not trained.
+    Fixes the dimension bug by using len(__order__) for feature count.
+    """
+    load_reward_cache()
+    if REWARD_MODEL is None or REWARD_VOCAB_OBJ is None:
+        return [None] * len(texts)
+
+    import numpy as np
+    # if the trained model expects a different number of features, bail safely
+    try:
+        expected = getattr(REWARD_MODEL, "n_features_in_", REWARD_NFEATS)
+    except Exception:
+        expected = REWARD_NFEATS
+    if expected != REWARD_NFEATS:
+        # mismatched artifacts (old model with new vocab). Ask user to retrain.
+        print("[reward] Feature mismatch between model and vocab — run `train-reward` again.")
+        return [0.5] * len(texts)
+
+    rows = np.zeros((len(texts), REWARD_NFEATS), dtype="float32")
+
+    token_re = re.compile(r"[a-zA-Z]{2,}")
+    for r, t in enumerate(texts):
+        toks = token_re.findall(t.lower())
+        if not toks:
+            continue
+        # term counts limited to known vocab
         counts = {}
         for tok in toks:
-            if tok in vocab:
-                counts[tok] = counts.get(tok,0)+1
-        X.append(counts)
-    # convert to simple tf-idf row vector (sparse handled manually)
-    import numpy as np
-    rows = np.zeros((len(texts), len(vocab)), dtype="float32")
-    idf = vocab.get("__idf__", {})
-    col_index = {tok:i for i,tok in enumerate(vocab["__order__"])}
-    for r,counts in enumerate(X):
+            if tok in REWARD_COL_INDEX:
+                counts[tok] = counts.get(tok, 0) + 1
         doclen = sum(counts.values()) or 1
-        for tok,c in counts.items():
-            if tok in col_index:
-                tf = c/doclen
-                rows[r, col_index[tok]] = tf * float(idf.get(tok, 1.0))
-    preds = model.predict(rows)  # regression
+        for tok, c in counts.items():
+            j = REWARD_COL_INDEX[tok]
+            tf = c / doclen
+            rows[r, j] = tf * float(REWARD_IDF.get(tok, 1.0))
+
+    preds = REWARD_MODEL.predict(rows)
     return preds.tolist()
 
 def render(tmpl: str, ctx: dict) -> str: return tmpl.format(**ctx)
@@ -745,7 +774,7 @@ class QuestionScreen(ttk.Frame):
             )
             b.pack(side="left", padx=6, pady=4)
 
-        help_text = "-2: very bad   -1: bad   0: neutral   1: ok   2: very good"
+        help_text = "-2: report/block   -1: skip   0: meh   1: like   2: love"
         self.help_lbl = ttk.Label(rp, text=help_text, style="Help.TLabel")
         self.help_lbl.pack(anchor="w", pady=(2, 10))
 
@@ -905,11 +934,11 @@ class QuestionScreen(ttk.Frame):
         if val is None:
             return ""
         mapping = {
-            -2: "You rated this question: Very bad (-2)",
-            -1: "You rated this question: Bad (-1)",
-            0: "You rated this question: Neutral (0)",
-            1: "You rated this question: OK (1)",
-            2: "You rated this question: Very good (2)",
+            -2: "You rated this question: -2 (Report/Block)",
+            -1: "You rated this question: -1 (Skip)",
+            0: "You rated this question: 0 (Meh)",
+            1: "You rated this question: 1 (Like)",
+            2: "You rated this question: 2 (Love)",
         }
         return mapping.get(val, "")
 
