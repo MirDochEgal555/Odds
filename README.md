@@ -1,8 +1,4 @@
-Here’s a **starter README.md** you can drop into your repo. It explains what your script does, how to install, and how to use it:
 
----
-
-````markdown
 # 🎲 What Are The Odds? (Local Dare Generator)
 
 This is a small **two-person coding project** that implements the party game *“What Are The Odds?”* with **AI-generated dares**, entirely **locally** using [Ollama](https://ollama.ai/).  
