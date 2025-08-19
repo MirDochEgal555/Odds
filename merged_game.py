@@ -43,13 +43,14 @@ DEFAULTS = dict(
 
 PROMPT_BASE = """You design dares for the party game "What Are The Odds?".
 Constraints:
-- Tone: {vibe}. Safety: {safety}. Language: {language}. Setting: {keywords}.
+- Tone: {vibe}. Safety: {safety}. Language: {language}. Keyword: {keywords}.
 - Doable in ≤ {time} minutes, location: ({location}).
 - No illegal, medical, hate, bullying.
+- If keywords are provided, distribute them across the list so each keyword appears in at least one dare.
 - Single sentence, concrete action, funny and friendly.
 - Remember these shall be dares, which you are not willing to do.
 - You shall mention a random player name from: {names}.
-Return a JSON array of exactly 55 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
+Return a JSON array of exactly 30 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
 
 PROMPT_SPICY = "Favor dares which need more willingness and are harder to do. These shall be more spicy and can involve interactions with strangers."
 
@@ -184,7 +185,7 @@ def ollama_json_list(model: str, prompt: str, temperature=0.8):
         # fall back: split lines
         items = [s.strip("-• \n\t") for s in content.strip().splitlines() if s.strip()]
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
-        return [s for s in items if len(s) > 0][:55]
+        return [s for s in items if len(s) > 0][:30]
     try:
         arr = json.loads(m.group(0))
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
@@ -804,6 +805,21 @@ class App(tk.Tk):
             style.theme_use("sun-valley-dark")
         except Exception:
             pass
+        # Light subtle background so black text is readable
+
+        SUBTLE_LIGHT       = "#E5E7EB"
+        SUBTLE_LIGHT_HOVER = "#D1D5DB"
+
+        style.configure("AccentBlack.TButton", font=("Segoe UI", 11, "bold"))
+        style.map("AccentBlack.TButton",
+                background=[("!disabled", self.ACCENT), ("active", self.ACCENT_A), ("disabled", self.ACCENT_A)],
+                foreground=[("!disabled", "#000000"), ("active", "#000000"), ("disabled", self.FG_MUTED)])
+
+        style.configure("SubtleBlack.TButton", background=SUBTLE_LIGHT, relief="flat", padding=8)
+        style.map("SubtleBlack.TButton",
+                background=[("!disabled", SUBTLE_LIGHT), ("active", SUBTLE_LIGHT_HOVER), ("pressed", SUBTLE_LIGHT_HOVER)],
+                foreground=[("!disabled", "#000000"), ("active", "#000000"), ("pressed", "#000000"), ("disabled", self.FG_MUTED)])
+
 
         # root bg
         self.configure(bg=self.APP_BG)
@@ -1326,9 +1342,10 @@ class QuestionScreen(ttk.Frame):
         actions = ttk.Frame(content)
         actions.pack(fill="x", pady=(8, 6))
 
-        self.start_btn  = ttk.Button(actions, text="Start",     command=self._start_clicked,   style="Accent.TButton")
-        self.finish_btn = ttk.Button(actions, text="Finished",  command=self._finished_clicked, style="Subtle.TButton")
-        self.back_btn   = ttk.Button(actions, text="Go back",   command=self._go_back_clicked,  style="Subtle.TButton")
+        self.start_btn  = ttk.Button(actions, text="Start",    command=self._start_clicked,   style="AccentBlack.TButton")
+        self.finish_btn = ttk.Button(actions, text="Finished", command=self._finished_clicked, style="SubtleBlack.TButton")
+        self.back_btn   = ttk.Button(actions, text="Go back",  command=self._go_back_clicked,  style="SubtleBlack.TButton")
+
 
         self.start_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
         self.finish_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
