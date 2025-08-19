@@ -6,6 +6,7 @@
 
 import os, json, re, csv, random, pathlib, textwrap, argparse, urllib.request, sys, math, time
 from datetime import datetime
+import threading
 
 # ===============================
 # === Engine (from app.py) ======
@@ -316,6 +317,13 @@ class Engine:
         self.weights = load_weights()
         self.ctx = ctx_from_players(self.players, DEFAULTS, "")
         self._qid_counter = 0
+                # --- prefetch/progress state for the loading screen ---
+        self._fetch_lock = threading.Lock()
+        self._fetch_status = {"loaded": 0, "total": 0, "percent": 0.0,
+                              "message": "", "done": True, "error": None}
+        self._prefetched = []
+        self._fetch_thread = None
+
 
     def start_new_game(self):
         self.round = 1
@@ -326,6 +334,53 @@ class Engine:
         self.players = list(players)
         self.ctx = ctx_from_players(self.players, self.ctx, self.last_keywords)
         print(f"[Engine] Players saved: {self.players}")
+    
+    def begin_fetch_questions(self, total: int = 1):
+        """Start background prefetch of `total` questions; non-blocking."""
+        with self._fetch_lock:
+            if self._fetch_thread is not None and self._fetch_thread.is_alive():
+                return  # already running
+            total = max(1, int(total or 1))
+            self._fetch_status = {"loaded": 0, "total": total, "percent": 0.0,
+                                  "message": "Starting…", "done": False, "error": None}
+
+        def _worker():
+            try:
+                for _ in range(total):
+                    q = self.get_next_question()
+                    with self._fetch_lock:
+                        if q:
+                            self._prefetched.append(q)
+                            self._fetch_status["loaded"] += 1
+                            t = self._fetch_status["total"] or total
+                            self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
+                            self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
+                        else:
+                            self._fetch_status["message"] = "No question returned."
+                            break
+            except Exception as e:
+                with self._fetch_lock:
+                    self._fetch_status["error"] = str(e)
+            finally:
+                with self._fetch_lock:
+                    self._fetch_status["done"] = True
+
+        t = threading.Thread(target=_worker, daemon=True)
+        self._fetch_thread = t
+        t.start()
+
+    def get_fetch_status(self):
+        """Return a snapshot dict with keys: loaded,total,percent,message,done,error."""
+        with self._fetch_lock:
+            return dict(self._fetch_status)
+
+    def consume_prefetched_question(self):
+        """Pop one prefetched question if available."""
+        with self._fetch_lock:
+            if self._prefetched:
+                return self._prefetched.pop(0)
+        return None
+
 
     def get_next_question(self):
         """
@@ -630,58 +685,166 @@ class LoadingScreen(ttk.Frame):
         title = ttk.Label(self, text="Loading...", style="Title.TLabel")
         title.pack(pady=(36, 12))
 
-        self.subtitle = ttk.Label(self, text="Preparing your game. Please wait 10 seconds.", style="Subtitle.TLabel")
+        self.subtitle = ttk.Label(self, text="Preparing your game. Please wait...", style="Subtitle.TLabel")
         self.subtitle.pack(pady=(0, 24))
 
-        self.progress = ttk.Progressbar(self, orient="horizontal", length=480, mode="determinate", maximum=LOADING_SECONDS * 10)
+        # We'll switch modes between determinate/indeterminate
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=480, mode="determinate", maximum=100)
         self.progress.pack(pady=8)
 
         self.status = ttk.Label(self, text="", style="Help.TLabel")
         self.status.pack(pady=6)
 
-        self._ticks = 0
         self._job = None
+        self._ticks = 0
+        self._use_real = False
+        self._fallback_msgs = [
+            "Working on it…",
+            "Optimizing your questions…",
+            "Downloading question packs…",
+            "Indexing categories…",
+            "Almost there…",
+        ]
+        self._fallback_idx = 0
 
     def on_show(self):
-        self._ticks = 0
+        # Reset UI
+        self.progress.stop()
+        self.progress.configure(mode="determinate")
         self.progress["value"] = 0
         self.status.config(text="")
-        self._schedule_tick()
+        self._ticks = 0
+        self._fallback_idx = 0
 
-    def _schedule_tick(self):
-        self._ticks += 1
-        self.progress["value"] = self._ticks
-        remaining = max(0, LOADING_SECONDS - self._ticks / 10)
-        self.status.config(text=f"Time remaining: {remaining:0.1f}s")
-        if self._ticks >= LOADING_SECONDS * 10:
-            # fetch first question from backend
-            if self.controller.engine:
-                try:
-                    q = self.controller.engine.get_next_question()
-                except Exception as e:
-                    print(f"[UI] get_next_question error: {e}")
-                    q = None
+        # Try real progress if engine supports it
+        eng = self.controller.engine
+        self._use_real = bool(eng and hasattr(eng, "begin_fetch_questions") and hasattr(eng, "get_fetch_status"))
+        if self._use_real:
+            try:
+                eng.begin_fetch_questions(total=1)  # prefetch first question
+                self.subtitle.config(text="Fetching questions…")
+                self._poll_real()
+            except Exception as e:
+                print(f"[UI] begin_fetch_questions error: {e}")
+                self._start_spinner()
+        else:
+            self._start_spinner()
+
+    # -------- REAL PROGRESS PATH --------
+    def _poll_real(self):
+        eng = self.controller.engine
+        try:
+            st = eng.get_fetch_status() if eng else None
+        except Exception as e:
+            print(f"[UI] get_fetch_status error: {e}")
+            st = None
+
+        if isinstance(st, dict):
+            percent = st.get("percent")
+            loaded = st.get("loaded")
+            total = st.get("total")
+            message = st.get("message")
+            done = bool(st.get("done"))
+            error = st.get("error")
+        else:
+            percent = None; loaded = None; total = None; message = None; done = False; error = None
+
+        if error:
+            self.subtitle.config(text="Error while fetching questions.")
+            self.status.config(text=str(error))
+            # fallback so user isn't stuck
+            return self._start_spinner()
+
+        # Update progressbar
+        if percent is not None:
+            self.progress.configure(mode="determinate")
+            try:
+                self.progress["value"] = max(0, min(100, float(percent)))
+            except Exception:
+                self.progress["value"] = 0
+        else:
+            if str(self.progress.cget("mode")) != "indeterminate":
+                self.progress.configure(mode="indeterminate")
+                self.progress.start(100)
+
+        # Update status line
+        if message:
+            if loaded is not None and total:
+                self.status.config(text=f"{message}  ({loaded}/{total})")
+            elif percent is not None:
+                self.status.config(text=f"{message}  ({percent:.0f}%)")
             else:
+                self.status.config(text=message)
+        else:
+            if loaded is not None and total:
+                self.status.config(text=f"Fetching questions… ({loaded}/{total})")
+            elif percent is not None:
+                self.status.config(text=f"Fetching questions… {percent:.0f}%")
+            else:
+                self.status.config(text="Fetching questions…")
+
+        if done:
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
+            self.progress["value"] = 100
+            self.subtitle.config(text="Done. Preparing first question…")
+            return self._proceed_to_question()
+        # keep polling
+        self._job = self.after(150, self._poll_real)
+
+    # -------- FALLBACK SPINNER PATH --------
+    def _start_spinner(self):
+        self.subtitle.config(text="Working on updates…")
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(100)
+        self._ticks = 0
+        self._spin_step()
+
+    def _spin_step(self):
+        self._ticks += 1
+        # rotate helper text every ~1.2s
+        if self._ticks % 12 == 0:
+            self._fallback_idx = (self._fallback_idx + 1) % len(self._fallback_msgs)
+            self.status.config(text=self._fallback_msgs[self._fallback_idx])
+        # after LOADING_SECONDS seconds, proceed
+        if self._ticks >= LOADING_SECONDS * 10:
+            self.progress.stop()
+            return self._proceed_to_question()
+        self._job = self.after(100, self._spin_step)
+
+    # -------- proceed to question --------
+    def _proceed_to_question(self):
+        q = None
+        eng = self.controller.engine
+        if eng and hasattr(eng, "consume_prefetched_question"):
+            try:
+                q = eng.consume_prefetched_question()
+            except Exception as e:
+                print(f"[UI] consume_prefetched_question error: {e}")
+                q = None
+        if q is None and eng:
+            try:
+                q = eng.get_next_question()
+            except Exception as e:
+                print(f"[UI] get_next_question error: {e}")
                 q = None
 
-            if q:
-                self.controller.current_question_id = q.get("id")
-                self.controller.current_question_text = q.get("text")
-                self.controller.frames["QuestionScreen"].q_lbl.config(text=self.controller.current_question_text)
-            else:
-                self.controller.current_question_id = None
-                self.controller.current_question_text = None
-                self.controller.frames["QuestionScreen"].q_lbl.config(text="No more questions available.")
+        if q:
+            self.controller.current_question_id = q.get("id")
+            self.controller.current_question_text = q.get("text")
+            self.controller.frames["QuestionScreen"].q_lbl.config(text=self.controller.current_question_text)
+        else:
+            self.controller.current_question_id = None
+            self.controller.current_question_text = None
+            self.controller.frames["QuestionScreen"].q_lbl.config(text="No more questions available.")
 
-            self.controller.show("QuestionScreen")
-            return
-        # FIX: schedule function without immediately calling it
-        self._job = self.after(100, self._schedule_tick)
+        self.controller.show("QuestionScreen")
 
     def destroy(self):
         if self._job is not None:
             self.after_cancel(self._job)
         super().destroy()
+
 
 
 class Collapsible(ttk.Frame):
