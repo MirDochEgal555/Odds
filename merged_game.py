@@ -7,6 +7,8 @@
 import os, json, re, csv, random, pathlib, textwrap, argparse, urllib.request, sys, math, time
 from datetime import datetime
 import threading
+from tkinter import ttk, messagebox, simpledialog
+
 
 # ===============================
 # === Engine (from app.py) ======
@@ -391,61 +393,114 @@ class Engine:
         self.ctx = ctx_from_players(self.players, self.ctx, self.last_keywords)
         print(f"[Engine] Players saved: {self.players}")
     
-    def begin_fetch_questions(self, total: int = 1):
-        """Start background prefetch of `total` questions; non-blocking."""
+    def begin_fetch_questions(self, total: int = 1, kw_list=None, kw_quota: int = 0):
+        """Start background prefetch of `total` questions; try to meet kw_quota with kw_list."""
         with self._fetch_lock:
             if self._fetch_thread is not None and self._fetch_thread.is_alive():
                 return  # already running
             total = max(1, int(total or 1))
+            kw_list = [k.lower() for k in (kw_list or [])]
+            kw_quota = max(0, min(total, int(kw_quota or 0)))
             self._fetch_status = {"loaded": 0, "total": total, "percent": 0.0,
                                 "message": "Starting…", "done": False, "error": None}
 
+        def contains_kw(text: str) -> bool:
+            if not kw_list:
+                return False
+            t = (text or "").lower()
+            return any(k in t for k in kw_list)
+
         def _worker():
             try:
-                # Prefer a single ranked batch using get_top_dares
-                try:
-                    local_ctx = ctx_from_players(self.players, self.ctx, self.last_keywords)
-                    ranked = get_top_dares(local_ctx, top_n=total, include_seen=False)
-                except Exception as e:
-                    print("[Engine] get_top_dares error, falling back to single fetch loop:", e)
-                    ranked = None
+                local_ctx_kw = ctx_from_players(self.players, self.ctx, ", ".join(kw_list) if kw_list else "")
+                local_ctx_no = ctx_from_players(self.players, self.ctx, "")  # no keywords
 
-                if ranked:
-                    # ranked: [(score, variant, text)]
-                    for _, variant, text in ranked:
+                ranked_kw = []
+                ranked_no = []
+                try:
+                    # Fetch a little extra to survive filtering
+                    want_kw = kw_quota if kw_quota > 0 else 0
+                    want_no = total - want_kw
+                    if want_kw > 0:
+                        ranked_kw = get_top_dares(local_ctx_kw, top_n=max(want_kw * 2, want_kw + 5), include_seen=False)
+                    if want_no > 0:
+                        ranked_no = get_top_dares(local_ctx_no, top_n=max(want_no * 2, want_no + 5), include_seen=False)
+                except Exception as e:
+                    print("[Engine] get_top_dares error, falling back:", e)
+                    ranked_kw, ranked_no = [], []
+
+                # Build selection
+                selected = []
+                seen_texts = set()
+
+                # 1) take up to kw_quota that actually contain a keyword
+                for _, variant, text in ranked_kw:
+                    if len(selected) >= kw_quota:
+                        break
+                    if not text:
+                        continue
+                    key = text.lower().strip()
+                    if key in seen_texts:
+                        continue
+                    if contains_kw(text):
+                        selected.append((variant, text))
+                        seen_texts.add(key)
+
+                # 2) fill remainder from NON-keyword pool
+                for _, variant, text in ranked_no:
+                    if len(selected) >= total:
+                        break
+                    if not text:
+                        continue
+                    key = text.lower().strip()
+                    if key in seen_texts:
+                        continue
+                    selected.append((variant, text))
+                    seen_texts.add(key)
+
+                # 3) still short? take more from KW pool even if they don't literally contain the keyword
+                if len(selected) < total:
+                    for _, variant, text in ranked_kw:
+                        if len(selected) >= total:
+                            break
                         if not text:
                             continue
-                        # mark seen
-                        seen = load_seen()
-                        key = text.lower()
-                        if key not in seen:
-                            seen.add(key); save_seen(seen)
-                        # build question
-                        self._qid_counter += 1
-                        qid = f"q{self._qid_counter}_{int(time.time())}"
-                        with self._fetch_lock:
-                            self._prefetched.append({"id": qid, "text": text, "variant": variant})
-                            self._fetch_status["loaded"] += 1
-                            t = self._fetch_status["total"]
-                            self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
-                            self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
-                    # finished
-                else:
-                    # Fallback: call get_next_question() total times
-                    for _ in range(total):
-                        q = self.get_next_question()
-                        with self._fetch_lock:
-                            if q:
-                                # attach variant info from last generation
-                                q["variant"] = getattr(self, "_last_variant", "v4_spicy")
-                                self._prefetched.append(q)
-                                self._fetch_status["loaded"] += 1
-                                t = self._fetch_status["total"] or total
-                                self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
-                                self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
-                            else:
-                                self._fetch_status["message"] = "No question returned."
-                                break
+                        key = text.lower().strip()
+                        if key in seen_texts:
+                            continue
+                        selected.append((variant, text))
+                        seen_texts.add(key)
+
+                # 4) last resort fallback: use get_next_question() loop
+                while len(selected) < total:
+                    q = self.get_next_question()
+                    if not q or not q.get("text"):
+                        break
+                    variant = getattr(self, "_last_variant", "v4_spicy")
+                    text = q["text"]
+                    key = text.lower().strip()
+                    if key in seen_texts:
+                        continue
+                    selected.append((variant, text))
+                    seen_texts.add(key)
+
+                # Materialize into prefetched queue and update progress status
+                for variant, text in selected[:total]:
+                    # mark seen
+                    seen = load_seen()
+                    key = text.lower()
+                    if key not in seen:
+                        seen.add(key); save_seen(seen)
+                    # build question
+                    self._qid_counter += 1
+                    qid = f"q{self._qid_counter}_{int(time.time())}"
+                    with self._fetch_lock:
+                        self._prefetched.append({"id": qid, "text": text, "variant": variant})
+                        self._fetch_status["loaded"] += 1
+                        t = self._fetch_status["total"]
+                        self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
+                        self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
+
             except Exception as e:
                 with self._fetch_lock:
                     self._fetch_status["error"] = str(e)
@@ -456,6 +511,7 @@ class Engine:
         t = threading.Thread(target=_worker, daemon=True)
         self._fetch_thread = t
         t.start()
+
 
     def get_fetch_status(self):
         """Return a snapshot dict with keys: loaded,total,percent,message,done,error."""
@@ -552,6 +608,9 @@ class App(tk.Tk):
         self.minsize(720, 520)
         self.round_total = 0     # total questions this round
         self.round_index = 0     # 1-based index within the round
+        self.keyword_list = []
+        self.keyword_quota = 0
+
 
 
         # Shared state
@@ -613,6 +672,41 @@ class App(tk.Tk):
             return data.get("players", [])
         except Exception:
             return []
+    
+    def ask_keywords_for_round(self, total_hint: int | None = None):
+        """Ask the user for round keywords and how many questions should include them."""
+        if total_hint is None:
+            total_hint = max(1, len(self.players) * 5)
+
+        # 1) keywords (optional)
+        ks = simpledialog.askstring(
+            "Round keywords",
+            "Enter keywords for this round (comma-separated, optional):",
+            parent=self
+        )
+        if not ks:
+            self.keyword_list = []
+            self.keyword_quota = 0
+            self.current_keywords = ""
+            return
+
+        kws = [k.strip() for k in ks.split(",") if k.strip()]
+        self.keyword_list = kws
+        self.current_keywords = ", ".join(kws)
+
+        # 2) quota (how many questions should include >=1 keyword)
+        q = simpledialog.askinteger(
+            "Keyword quota",
+            f"How many of the {total_hint} questions should include at least one of these keywords?\n(0–{total_hint})",
+            parent=self,
+            minvalue=0,
+            maxvalue=total_hint,
+        )
+        if q is None:
+            q = 0
+        self.keyword_quota = int(q)
+
+
 
 
 class StartScreen(ttk.Frame):
@@ -709,7 +803,8 @@ class PlayerEntryScreen(ttk.Frame):
                 self.controller.engine.save_players(self.controller.players)
             except Exception as e:
                 print(f"[UI] save_players error: {e}")
-
+        # Ask for this round's keywords & quota
+        self.controller.ask_keywords_for_round(total_hint=max(1, len(self.controller.players) * 5))
         self.controller.started = False
         self.controller.rating = None
         self.controller.show("LoadingScreen")
@@ -770,7 +865,8 @@ class LoadGameScreen(ttk.Frame):
                 self.controller.engine.save_players(self.controller.players)
             except Exception as e:
                 print(f"[UI] save_players (load) error: {e}")
-
+        # Ask for this round's keywords & quota
+        self.controller.ask_keywords_for_round(total_hint=max(1, len(self.controller.players) * 5))
         self.controller.started = False
         self.controller.rating = None
         self.controller.show("LoadingScreen")
@@ -821,9 +917,13 @@ class LoadingScreen(ttk.Frame):
         if self._use_real:
             try:
                 total = max(1, len(self.controller.players) * 5)
-                eng.begin_fetch_questions(total=total)
+                self.controller.round_total = total  # <-- so header knows M right away
+                eng.begin_fetch_questions(
+                    total=total,
+                    kw_list=self.controller.keyword_list,
+                    kw_quota=self.controller.keyword_quota,
+                )
                 self.subtitle.config(text=f"Fetching {total} questions…")
-                self.subtitle.config(text="Fetching questions…")
                 self._poll_real()
             except Exception as e:
                 print(f"[UI] begin_fetch_questions error: {e}")
@@ -1093,7 +1193,7 @@ class QuestionScreen(ttk.Frame):
             self.finish_btn.forget()
         if self.back_btn.winfo_ismapped():
             self.back_btn.forget()
-        self.kw_entry.state(["!disabled"])
+        self.kw_entry.state(["disabled"])
 
     def _show_started_state(self):
         if self.start_btn.winfo_ismapped():
@@ -1108,8 +1208,8 @@ class QuestionScreen(ttk.Frame):
         return [k.strip() for k in text.split(",") if k.strip()]
 
     def _start_clicked(self):
-        self.controller.current_keywords = self.kw_entry.get().strip()
-        keywords = self._parse_keywords(self.controller.current_keywords)
+        # Parse keywords from entry
+        keywords = self._parse_keywords(self.controller.current_keywords or "")
 
         if self.controller.engine and self.controller.current_question_id is not None:
             try:
@@ -1134,7 +1234,7 @@ class QuestionScreen(ttk.Frame):
 
     def _finished_clicked(self):
         # Submit feedback exactly once per question
-        keywords = self._parse_keywords(self.controller.current_keywords)
+        keywords = self._parse_keywords(self.controller.current_keywords or "")
         if self.controller.engine and self.controller.current_question_id is not None:
             try:
                 self.controller.engine.submit_feedback(
@@ -1146,11 +1246,12 @@ class QuestionScreen(ttk.Frame):
                 )
             except Exception as e:
                 print(f"[UI] submit_feedback error: {e}")
+
+        # Avoid double-click spam during transition
         self.finish_btn.state(["disabled"])
         self._next_question_in_round()
         self.finish_btn.state(["!disabled"])
-        # Advance within round, or end-of-round prompt
-        self._next_question_in_round()
+
 
 
     def _next_round(self):
@@ -1247,6 +1348,9 @@ class QuestionScreen(ttk.Frame):
         self.controller.current_keywords = ""
         self.kw_entry.state(["!disabled"])
         self.kw_entry.delete(0, tk.END)
+        # Ask for next round's keywords/quota (optional but handy)
+        self.controller.ask_keywords_for_round(total_hint=max(1, len(self.controller.players) * 5))
+
 
         # Show loading to prefetch the next batch (players × 5) with real progress
         self.controller.show("LoadingScreen")
