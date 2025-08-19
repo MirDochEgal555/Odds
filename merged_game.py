@@ -723,6 +723,36 @@ class App(tk.Tk):
         style.configure("Subtitle.TLabel", font=("Segoe UI", 12))
         style.configure("Help.TLabel", font=("Segoe UI", 10), foreground="#555")
         style.configure("Question.TLabel", font=("Segoe UI", 16, "bold"))
+        # --- Color pass (works great with sun-valley, still OK on default ttk) ---
+        style.configure("Card.TFrame", background="#111827")
+        style.configure("Title.TLabel", foreground="#E5E7EB")     # light gray
+        style.configure("Subtitle.TLabel", foreground="#9CA3AF")  # mid gray
+        style.configure("Help.TLabel", foreground="#6B7280")
+        style.configure("Question.TLabel", foreground="#F9FAFB")  # near white
+
+        # Primary / accent button (purple)
+        style.configure("Accent.TButton", font=("Segoe UI", 11, "bold"))
+        style.map("Accent.TButton",
+                background=[("!disabled", "#8B5CF6"), ("active", "#7C3AED")],
+                foreground=[("!disabled", "white")])
+
+        # Success / confirm button (green)
+        style.configure("Success.TButton", font=("Segoe UI", 11, "bold"))
+        style.map("Success.TButton",
+                background=[("!disabled", "#22C55E"), ("active", "#16A34A")],
+                foreground=[("!disabled", "white")])
+
+        # Secondary / neutral button (gray)
+        style.configure("Secondary.TButton", font=("Segoe UI", 11))
+        style.map("Secondary.TButton",
+                background=[("!disabled", "#374151"), ("active", "#4B5563")],
+                foreground=[("!disabled", "white")])
+
+        # Loading bar
+        style.configure("Loading.Horizontal.TProgressbar",
+                        troughcolor="#111827",
+                        background="#22C55E")
+
 
     def show(self, name):
         frame = self.frames[name]
@@ -809,8 +839,8 @@ class StartScreen(ttk.Frame):
                     print(f"[UI] start_new_game error: {e}")
             self.controller.show("PlayerEntryScreen")
 
-        start_btn = ttk.Button(btns, text="Start Game", command=go_start)
-        load_btn = ttk.Button(btns, text="Load Game", command=lambda: controller.show("LoadGameScreen"))
+        start_btn = ttk.Button(btns, text="Start Game", command=go_start, style="Accent.TButton")
+        load_btn  = ttk.Button(btns, text="Load Game",  command=lambda: controller.show("LoadGameScreen"), style="Secondary.TButton")
 
         start_btn.grid(row=0, column=0, padx=8, pady=8, ipadx=8, ipady=4)
         load_btn.grid(row=0, column=1, padx=8, pady=8, ipadx=8, ipady=4)
@@ -958,8 +988,12 @@ class LoadingScreen(ttk.Frame):
         self.subtitle.pack(pady=(0, 24))
 
         # We'll switch modes between determinate/indeterminate
-        self.progress = ttk.Progressbar(self, orient="horizontal", length=480, mode="determinate", maximum=100)
-        self.progress.pack(pady=8)
+        self.progress = ttk.Progressbar(
+            self, orient="horizontal", length=480,
+            mode="determinate", maximum=100,
+            style="Loading.Horizontal.TProgressbar"
+        )
+
 
         self.status = ttk.Label(self, text="", style="Help.TLabel")
         self.status.pack(pady=6)
@@ -1162,7 +1196,7 @@ class QuestionScreen(ttk.Frame):
         content = ttk.Frame(self)
         content.pack(fill="both", expand=True, padx=16)
 
-        q_card = ttk.Frame(content, padding=16, relief="groove")
+        q_card = ttk.Frame(content, padding=16, style="Card.TFrame")
         q_card.pack(fill="x", pady=(0, 12))
         self.q_lbl = ttk.Label(
             q_card,
@@ -1188,9 +1222,9 @@ class QuestionScreen(ttk.Frame):
         actions = ttk.Frame(content)
         actions.pack(fill="x", pady=(8, 6))
 
-        self.start_btn = ttk.Button(actions, text="Start", command=self._start_clicked)
-        self.finish_btn = ttk.Button(actions, text="Finished", command=self._finished_clicked)
-        self.back_btn = ttk.Button(actions, text="Go back", command=self._go_back_clicked)
+        self.start_btn = ttk.Button(actions, text="Start", command=self._start_clicked, style="Accent.TButton")
+        self.finish_btn = ttk.Button(actions, text="Finished", command=self._finished_clicked, style="Success.TButton")
+        self.back_btn = ttk.Button(actions, text="Go back", command=self._go_back_clicked, style="Secondary.TButton")
 
         self.start_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
         self.finish_btn.pack(side="left", padx=4, ipadx=10, ipady=4)
@@ -1228,7 +1262,7 @@ class QuestionScreen(ttk.Frame):
         self.status = ttk.Label(footer, text="", style="Help.TLabel")
         self.status.pack(side="left")
 
-        home_btn = ttk.Button(footer, text="⟵ Main Menu", command=lambda: controller.show("StartScreen"))
+        home_btn = ttk.Button(footer, text="⟵ Main Menu", command=lambda: controller.show("StartScreen"), style="Secondary.TButton")
         home_btn.pack(side="right")
 
     def _update_question_view(self):
