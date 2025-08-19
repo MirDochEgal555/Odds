@@ -1,0 +1,41 @@
+def reward_predict(texts):
+    """
+    Returns scores in [0,1] from the neural reward model if available;
+    falls back to 0.5 when not trained yet.
+    """
+    import pathlib, json, torch
+    from sentence_transformers import SentenceTransformer
+    ROOT = pathlib.Path(__file__).parent
+    DATA = ROOT / "data"
+    MODEL_DIR = DATA / "nn_reward"
+    cfg_p = MODEL_DIR / "config.json"
+    mlp_p = MODEL_DIR / "rank_mlp.pt"
+    if not (cfg_p.exists() and mlp_p.exists()):
+        return [0.5] * len(texts)
+
+    cfg = json.loads(cfg_p.read_text())
+    enc = SentenceTransformer(cfg["encoder"])
+    dim = cfg["dim"]
+    class RankMLP(torch.nn.Module):
+        def __init__(self, dim: int):
+            super().__init__()
+            self.net = torch.nn.Sequential(
+                torch.nn.Linear(dim, 256), torch.nn.ReLU(),
+                torch.nn.Linear(256, 64), torch.nn.ReLU(),
+                torch.nn.Linear(64, 1)
+            )
+        def forward(self, x): return self.net(x).squeeze(-1)
+    mlp = RankMLP(dim)
+    mlp.load_state_dict(torch.load(mlp_p, map_location="cpu"))
+    mlp.eval()
+
+    import numpy as np
+    with torch.no_grad():
+        emb = enc.encode(list(texts), normalize_embeddings=True)
+        emb = torch.tensor(emb, dtype=torch.float32)
+        raw = mlp(emb).numpy()
+    # map raw scores to [0,1] via sigmoid
+    import math
+    return [1.0 / (1.0 + math.exp(-float(x))) for x in raw]
+
+
