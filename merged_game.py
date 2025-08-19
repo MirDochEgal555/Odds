@@ -49,7 +49,7 @@ Constraints:
 - Single sentence, concrete action, funny and friendly.
 - Remember these shall be dares, which you are not willing to do.
 - You shall mention a random player name from: {names}.
-Return a JSON array of exactly 30 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
+Return a JSON array of exactly 55 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
 
 PROMPT_SPICY = "Favor dares which need more willingness and are harder to do. These shall be more spicy and can involve interactions with strangers."
 
@@ -138,7 +138,7 @@ def ollama_json_list(model: str, prompt: str, temperature=0.8):
         # fall back: split lines
         items = [s.strip("-• \n\t") for s in content.strip().splitlines() if s.strip()]
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
-        return [s for s in items if len(s) > 0][:30]
+        return [s for s in items if len(s) > 0][:55]
     try:
         arr = json.loads(m.group(0))
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
