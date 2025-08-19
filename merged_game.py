@@ -860,7 +860,26 @@ class App(tk.Tk):
                 # --- subtle controls: slightly brighter than app bg ---
         SUBTLE_BG       = "#2b3548"     # ~+6% over APP_BG
         SUBTLE_BG_HOVER = "#32405a"
-
+        style.configure(
+            "Start.TButton",
+            background=SUBTLE_BG,          # a touch brighter than APP_BG
+            foreground="#FFFFFF",          # white text
+            relief="flat",
+            padding=10,
+            font=("Segoe UI", 12, "bold")  # bold
+        )
+        style.map(
+            "Start.TButton",
+            background=[
+                ("active", SUBTLE_BG_HOVER),
+                ("pressed", SUBTLE_BG_HOVER),
+                ("disabled", "#202938"),    # a muted disabled shade
+            ],
+            foreground=[
+                ("disabled", self.FG_MUTED),
+                ("!disabled", "#FFFFFF"),
+            ],
+        )
         # Buttons (for Finished / Go Back)
         style.configure("Subtle.TButton",
                         background=SUBTLE_BG,
@@ -987,8 +1006,9 @@ class StartScreen(ttk.Frame):
                     print(f"[UI] start_new_game error: {e}")
             self.controller.show("PlayerEntryScreen")
 
-        start_btn = ttk.Button(btns, text="Start Game", command=go_start, style="Accent.TButton")
-        load_btn  = ttk.Button(btns, text="Load Game",  command=lambda: controller.show("LoadGameScreen"), style="Secondary.TButton")
+        start_btn = ttk.Button(btns, text="Start Game", command=go_start, style="Start.TButton")
+        load_btn  = ttk.Button(btns, text="Load Game",  command=lambda: controller.show("LoadGameScreen"), style="Start.TButton")
+
 
         start_btn.grid(row=0, column=0, padx=8, pady=8, ipadx=8, ipady=4)
         load_btn.grid(row=0, column=1, padx=8, pady=8, ipadx=8, ipady=4)
