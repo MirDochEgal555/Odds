@@ -36,7 +36,7 @@ DEFAULTS = dict(
     vibe="silly",            # chill | silly | chaotic
     safety="Party",            # PG | PG13 | Party
     time=10,                   # minutes
-    location="outdoor, beach, bar, pool, club",
+    location="outdoor, beach, bar, pool, club, spain",
     names="Robin,Philipp,Marvin,Daniel,Lex,Tiberio,Sven,Leon,Lorenz",
     keywords="friendly",
 )
@@ -107,9 +107,16 @@ def novelty_score(text: str, freqs: Counter, sat: int = 8) -> float:
     vals = [sat / (freqs.get(tok, 0) + sat) for tok in toks]
     return sum(vals) / len(vals)
 
-def update_word_freqs(text: str, freqs: Counter):
-    for tok in tokenize_words(text):
-        freqs[tok] += 1
+
+def update_word_freqs(text: str, freqs=None) -> Counter:
+    """Update (or create) a Counter with tokens from text; always return a Counter."""
+    if not isinstance(freqs, Counter):
+        freqs = Counter(freqs or {})
+    toks = tokenize_words(text)
+    if toks:
+        freqs.update(toks)
+    return freqs
+
 
 
 # ---------------- Keyword Helper ----------------
