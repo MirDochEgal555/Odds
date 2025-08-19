@@ -27,6 +27,7 @@ DEFAULTS = dict(
     time=10,                  # minutes
     location="spain, outdoor, after dinner",
     names="Robin,Philipp,Marvin,Daniel,Lex,Tiberio,Sven,Leon,Lorenz",
+    keywords="friendly",
 )
 
 # ---------------- prompt variants ----------------
@@ -496,7 +497,7 @@ def main():
     ap.add_argument("--allow-seen", action="store_true", help="Allow repeats from your seen history (make-pack)")
     ap.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility (make-pack)")
     ap.add_argument("--top-n", type=int, default=25, help="How many top dares to show in play-top")
-    ap.add_argument("--keywords", help="Extra Keywords")
+    ap.add_argument("--keywords", default=DEFAULTS["keywords"], help="Extra Keywords")
 
     args = ap.parse_args()
 
@@ -511,7 +512,8 @@ def main():
         "time": args.time,
         "location": args.location,
         "names": args.names,
-        "names_list": [n.strip() for n in args.names.split(",") if n.strip()]
+        "names_list": [n.strip() for n in args.names.split(",") if n.strip()],
+        "keywords": args.keywords
     }
     weights = load_weights()
 
@@ -528,7 +530,8 @@ def main():
         "time": args.time,
         "location": args.location,
         "names": args.names,
-        "names_list": [n.strip() for n in args.names.split(",") if n.strip()]
+        "names_list": [n.strip() for n in args.names.split(",") if n.strip()],
+        "keywords": args.keywords
     }
 
     if args.cmd == "play-top":
