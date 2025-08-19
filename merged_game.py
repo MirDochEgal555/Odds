@@ -676,109 +676,117 @@ MAX_PLAYERS = 10
 ENGINE = Engine()
 
 class App(tk.Tk):
+    # --- palette (high-contrast, dark UI) ---
+    APP_BG   = "#11161d"   # bg
+    CARD_BG  = "#111827"
+    FG       = "#F9FAFB"   # primary text
+    FG_SOFT  = "#E5E7EB"
+    FG_MUTED = "#9CA3AF"
+    FG_HELP  = "#6B7280"
+    ACCENT   = "#8B5CF6"   # purple
+    ACCENT_A = "#7C3AED"
+    OK       = "#22C55E"   # green
+    OK_A     = "#16A34A"
+    NEUTRAL  = "#A1AAB8"   # gray button
+    NEUTRAL_A= "#4B5563"
+
     def __init__(self):
         super().__init__()
         self.title("What are the odds...? — Game")
         self.geometry("800x560")
         self.minsize(720, 520)
-        self.round_total = 0     # total questions this round
-        self.round_index = 0     # 1-based index within the round
-        self.keyword_list = []
+
+        # --- game state ---
+        self.round_total = 0
+        self.round_index = 0
+        self.keyword_list: list[str] = []
         self.keyword_quota = 0
-
-
-
-        # Shared state
-        self.players = []
+        self.players: list[str] = []
         self.rating = None
         self.started = False
         self.round = 1
 
-        # === INTERFACE STATE ===
+        # --- engine / question state ---
         self.engine = ENGINE
         self.current_question_id = None
-        this_text = "Placeholder Question:\n\nWhat are the odds... (this will be replaced by your imported questions)?"
-        self.current_question_text = this_text
-        self.current_keywords = ""  # raw comma-separated string for the round
+        self.current_question_text = (
+            "Placeholder Question:\n\nWhat are the odds... "
+            "(this will be replaced by your imported questions)?"
+        )
+        self.current_keywords = ""
 
-        # Container for screens
+        # --- container + screens ---
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
-
         self.frames = {}
         for F in (StartScreen, PlayerEntryScreen, LoadGameScreen, LoadingScreen, QuestionScreen):
             frame = F(parent=container, controller=self)
             self.frames[F.__name__] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
+        # --- theme / styling ---
+        self._setup_theme()
+
         self.show("StartScreen")
 
-        # Basic ttk styling
+    # ---------- UI helpers ----------
+    def _setup_theme(self):
         style = ttk.Style(self)
+        # try nice theme; fall back quietly
         try:
-            self.tk.call("source", "sun-valley.tcl")  # if present, use a nicer theme
+            self.tk.call("source", "sun-valley.tcl")
             style.theme_use("sun-valley-dark")
         except Exception:
-            style.theme_use(style.theme_use())
+            pass
 
-        # ---- Dark app background ----
-        APP_BG = "#1f2937"   # dark grey (Tailwind slate-800-ish)
+        # root bg
+        self.configure(bg=self.APP_BG)
 
-        # root window (covers any gaps)
-        self.configure(bg=APP_BG)
+        # base widgets on dark bg
+        for s in ("TFrame", "TLabel"):
+            style.configure(s, background=self.APP_BG)
+        style.configure("Title.TLabel",    font=("Segoe UI", 18, "bold"), foreground=self.FG_SOFT)
+        style.configure("Subtitle.TLabel", font=("Segoe UI", 12),         foreground=self.FG_SOFT)
+        style.configure("Help.TLabel",     font=("Segoe UI", 10),         foreground=self.FG_HELP)
+        style.configure("Question.TLabel", font=("Segoe UI", 16, "bold"), foreground=self.FG)
 
-        # base ttk backgrounds
-        style.configure("TFrame", background=APP_BG)
-        style.configure("TLabel", background=APP_BG)
+        # cards / panels
+        style.configure("Card.TFrame", background=self.CARD_BG)
 
-        # ensure your custom label styles also use the dark bg
-        style.configure("Title.TLabel", background=APP_BG)
-        style.configure("Subtitle.TLabel", background=APP_BG)
-        style.configure("Help.TLabel", background=APP_BG)
-        style.configure("Question.TLabel", background=APP_BG)
+        # entries (light text on dark field)
+        style.configure("TEntry",
+                        fieldbackground=self.CARD_BG,
+                        foreground=self.FG,
+                        insertcolor=self.FG)
 
-        style.configure("Card.TFrame", background="#111827")  # even darker
+        # buttons: white text on colored backgrounds for contrast
+        style.configure("Accent.TButton",   font=("Segoe UI", 11, "bold"))
+        style.configure("Success.TButton",  font=("Segoe UI", 11, "bold"))
+        style.configure("Secondary.TButton",font=("Segoe UI", 11, "bold"))
 
-        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"))
-        style.configure("Subtitle.TLabel", font=("Segoe UI", 12))
-        style.configure("Help.TLabel", font=("Segoe UI", 10), foreground="#555")
-        style.configure("Question.TLabel", font=("Segoe UI", 16, "bold"))
-        # --- Color pass (works great with sun-valley, still OK on default ttk) ---
-        style.configure("Card.TFrame", background="#111827")
-        style.configure("Title.TLabel", foreground="#E5E7EB")     # light gray
-        style.configure("Subtitle.TLabel", foreground="#9CA3AF")  # mid gray
-        style.configure("Help.TLabel", foreground="#6B7280")
-        style.configure("Question.TLabel", foreground="#F9FAFB")  # near white
-
-        # Primary / accent button (purple)
-        style.configure("Accent.TButton", font=("Segoe UI", 11, "bold"))
         style.map("Accent.TButton",
-                background=[("!disabled", "#8B5CF6"), ("active", "#7C3AED")],
-                foreground=[("!disabled", "black")])
-
-        # Success / confirm button (green)
-        style.configure("Success.TButton", font=("Segoe UI", 11, "bold"))
+                  background=[("disabled", self.ACCENT_A), ("active", self.ACCENT_A), ("!disabled", self.ACCENT)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
         style.map("Success.TButton",
-                background=[("!disabled", "#22C55E"), ("active", "#16A34A")],
-                foreground=[("!disabled", "black")])
-
-        # Secondary / neutral button (gray)
-        style.configure("Secondary.TButton", font=("Segoe UI", 11, "bold"))
+                  background=[("disabled", self.OK_A), ("active", self.OK_A), ("!disabled", self.OK)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
         style.map("Secondary.TButton",
-                background=[("!disabled", "#374151"), ("active", "#4B5563")],
-                foreground=[("!disabled", "black")])
+                  background=[("disabled", self.NEUTRAL_A), ("active", self.NEUTRAL_A), ("!disabled", self.NEUTRAL)],
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
 
-        # Loading bar
-        style.configure("Loading.Horizontal.TProgressbar",
-                        troughcolor="#111827",
-                        background="#22C55E")
+        # tk Listbox (used on Load screen) – force dark with light text
+        self.option_add("*Listbox.Background",       self.NEUTRAL)
+        self.option_add("*Listbox.Foreground",       self.FG)
+        self.option_add("*Listbox.SelectBackground", self.NEUTRAL_A)
+        self.option_add("*Listbox.SelectForeground", "#FFFFFF")
+        self.option_add("*Listbox.Font",            ("Segoe UI", 11))
 
-
-    def show(self, name):
+    def show(self, name: str):
         frame = self.frames[name]
         frame.tkraise()
         if hasattr(frame, "on_show"):
             frame.on_show()
+
 
     def save_players(self):
         try:
@@ -1010,51 +1018,41 @@ class LoadingScreen(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
 
-        title = ttk.Label(self, text="Loading...", style="Title.TLabel")
-        title.pack(pady=(36, 12))
+        # Big title we animate: Loading. Loading.. Loading...
+        self.title = ttk.Label(self, text="Loading", style="Title.TLabel")
+        self.title.pack(pady=(36, 8))
 
-        self.subtitle = ttk.Label(self, text="Preparing your game. Please wait...", style="Subtitle.TLabel")
-        self.subtitle.pack(pady=(0, 24))
+        self.subtitle = ttk.Label(self, text="Preparing your game…", style="Subtitle.TLabel")
+        self.subtitle.pack(pady=(0, 8))
 
-        # We'll switch modes between determinate/indeterminate
-        self.progress = ttk.Progressbar(
-            self, orient="horizontal", length=480,
-            mode="determinate", maximum=100,
-            style="Loading.Horizontal.TProgressbar"
-        )
+        # Detail line for fetched counts / messages
+        self.status = ttk.Label(self, text="", style="Subtitle.TLabel")
+        self.status.pack(pady=(0, 6))
 
-
-        self.status = ttk.Label(self, text="", style="Help.TLabel")
-        self.status.pack(pady=6)
-
-        self._job = None
-        self._ticks = 0
+        # timers/state
         self._use_real = False
-        self._fallback_msgs = [
-            "Working on it…",
-            "Optimizing your questions…",
-            "Downloading question packs…",
-            "Indexing categories…",
-            "Almost there…",
-        ]
-        self._fallback_idx = 0
+        self._dots = 0
+        self._dots_job = None
+        self._poll_job = None
+        self._wait_ms = 0
 
     def on_show(self):
-        # Reset UI
-        self.progress.stop()
-        self.progress.configure(mode="determinate")
-        self.progress["value"] = 0
+        # Reset UI & timers
+        self._cancel_jobs()
+        self._dots = 0
+        self._wait_ms = 0
+        self.title.config(text="Loading")
+        self.subtitle.config(text="Preparing your game…")
         self.status.config(text="")
-        self._ticks = 0
-        self._fallback_idx = 0
+        self._tick_dots()
 
-        # Try real progress if engine supports it
+        # Try real progress (but we only *display* text, no bar)
         eng = self.controller.engine
         self._use_real = bool(eng and hasattr(eng, "begin_fetch_questions") and hasattr(eng, "get_fetch_status"))
         if self._use_real:
             try:
                 total = max(1, len(self.controller.players) * 5)
-                self.controller.round_total = total  # <-- so header knows M right away
+                self.controller.round_total = total  # header in next screen uses this
                 eng.begin_fetch_questions(
                     total=total,
                     kw_list=self.controller.keyword_list,
@@ -1063,128 +1061,105 @@ class LoadingScreen(ttk.Frame):
                 self.subtitle.config(text=f"Fetching {total} questions…")
                 self._poll_real()
             except Exception as e:
-                print(f"[UI] begin_fetch_questions error: {e}")
-                self._start_spinner()
+                self.status.config(text="(Falling back without progress)")
+                self._fallback_wait()
         else:
-            self._start_spinner()
+            self._fallback_wait()
 
-    # -------- REAL PROGRESS PATH --------
+    def _tick_dots(self):
+        # Animate title: Loading. Loading.. Loading...
+        self._dots = (self._dots % 3) + 1
+        self.title.config(text="Loading" + "." * self._dots)
+        self._dots_job = self.after(400, self._tick_dots)
+
     def _poll_real(self):
         eng = self.controller.engine
         try:
             st = eng.get_fetch_status() if eng else None
-        except Exception as e:
-            print(f"[UI] get_fetch_status error: {e}")
+        except Exception:
             st = None
 
         if isinstance(st, dict):
-            percent = st.get("percent")
             loaded = st.get("loaded")
             total = st.get("total")
-            message = st.get("message")
             done = bool(st.get("done"))
             error = st.get("error")
         else:
-            percent = None; loaded = None; total = None; message = None; done = False; error = None
+            loaded = total = None
+            done = False
+            error = None
 
         if error:
             self.subtitle.config(text="Error while fetching questions.")
             self.status.config(text=str(error))
-            # fallback so user isn't stuck
-            return self._start_spinner()
+            return self._fallback_wait()
 
-        # Update progressbar
-        if percent is not None:
-            self.progress.configure(mode="determinate")
-            try:
-                self.progress["value"] = max(0, min(100, float(percent)))
-            except Exception:
-                self.progress["value"] = 0
+        # Text-only feedback (no bar)
+        if loaded is not None and total:
+            self.status.config(text=f"Fetched {loaded}/{total}")
         else:
-            if str(self.progress.cget("mode")) != "indeterminate":
-                self.progress.configure(mode="indeterminate")
-                self.progress.start(100)
-
-        # Update status line
-        if message:
-            if loaded is not None and total:
-                self.status.config(text=f"{message}  ({loaded}/{total})")
-            elif percent is not None:
-                self.status.config(text=f"{message}  ({percent:.0f}%)")
-            else:
-                self.status.config(text=message)
-        else:
-            if loaded is not None and total:
-                self.status.config(text=f"Fetching questions… ({loaded}/{total})")
-            elif percent is not None:
-                self.status.config(text=f"Fetching questions… {percent:.0f}%")
-            else:
-                self.status.config(text="Fetching questions…")
+            self.status.config(text="Fetching…")
 
         if done:
-            self.progress.stop()
-            self.progress.configure(mode="determinate")
-            self.progress["value"] = 100
-            self.subtitle.config(text="Done. Preparing first question…")
             return self._proceed_to_question()
-        # keep polling
-        self._job = self.after(150, self._poll_real)
 
-    # -------- FALLBACK SPINNER PATH --------
-    def _start_spinner(self):
-        self.subtitle.config(text="Working on updates…")
-        self.progress.configure(mode="indeterminate")
-        self.progress.start(100)
-        self._ticks = 0
-        self._spin_step()
+        self._poll_job = self.after(200, self._poll_real)
 
-    def _spin_step(self):
-        self._ticks += 1
-        # rotate helper text every ~1.2s
-        if self._ticks % 12 == 0:
-            self._fallback_idx = (self._fallback_idx + 1) % len(self._fallback_msgs)
-            self.status.config(text=self._fallback_msgs[self._fallback_idx])
-        # after LOADING_SECONDS seconds, proceed
-        if self._ticks >= LOADING_SECONDS * 10:
-            self.progress.stop()
+    def _fallback_wait(self):
+        # Simple timed wait with the dot animation
+        self._wait_ms += 200
+        if self._wait_ms >= LOADING_SECONDS * 1000:
+            self._wait_ms = 0
             return self._proceed_to_question()
-        self._job = self.after(100, self._spin_step)
+        self._poll_job = self.after(200, self._fallback_wait)
 
-    # -------- proceed to question --------
     def _proceed_to_question(self):
-        q = None
         eng = self.controller.engine
+        q = None
         if eng and hasattr(eng, "consume_prefetched_question"):
             try:
                 q = eng.consume_prefetched_question()
-            except Exception as e:
-                print(f"[UI] consume_prefetched_question error: {e}")
+            except Exception:
                 q = None
         if q is None and eng:
             try:
                 q = eng.get_next_question()
-            except Exception as e:
-                print(f"[UI] get_next_question error: {e}")
+            except Exception:
                 q = None
 
         if q:
             self.controller.current_question_id = q.get("id")
             self.controller.current_question_text = q.get("text")
-            self.controller.frames["QuestionScreen"].q_lbl.config(text=self.controller.current_question_text)
+            self.controller.frames["QuestionScreen"].q_lbl.config(
+                text=self.controller.current_question_text
+            )
         else:
             self.controller.current_question_id = None
             self.controller.current_question_text = None
-            self.controller.frames["QuestionScreen"].q_lbl.config(text="No more questions available.")
+            self.controller.frames["QuestionScreen"].q_lbl.config(
+                text="No more questions available."
+            )
 
-            # set counters for Round 1
+        # Initialize round counters for next screen
         self.controller.round_total = max(1, len(self.controller.players) * 5)
         self.controller.round_index = 1
-        self.controller.started = False  # round hasn't started until user presses Start
+        self.controller.started = False
+
+        self._cancel_jobs()
         self.controller.show("QuestionScreen")
 
+    def _cancel_jobs(self):
+        if self._dots_job is not None:
+            try: self.after_cancel(self._dots_job)
+            except Exception: pass
+            self._dots_job = None
+        if self._poll_job is not None:
+            try: self.after_cancel(self._poll_job)
+            except Exception: pass
+            self._poll_job = None
+
     def destroy(self):
-        if self._job is not None:
-            self.after_cancel(self._job)
+        self._cancel_jobs()
         super().destroy()
 
 
