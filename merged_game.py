@@ -34,7 +34,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULTS = dict(
     language="en",
     vibe="silly",            # chill | silly | chaotic
-    safety="Party",            # PG | PG13 | Party
+    safety="Dirty",            # PG | PG13 | Party | Dirty
     time=10,                   # minutes
     location="outdoor, beach, bar, pool, club, spain",
     names="Robin,Philipp,Marvin,Daniel,Lex,Tiberio,Sven,Leon,Lorenz",
@@ -50,7 +50,7 @@ Constraints:
 - Single sentence, concrete action, funny and friendly.
 - Remember these shall be dares, which you are not willing to do.
 - You shall mention a random player name from: {names}.
-Return a JSON array of exactly 30 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
+Return a JSON array of exactly 25 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
 
 PROMPT_SPICY = "Favor dares which need more willingness and are harder to do. These shall be more spicy and can involve interactions with strangers."
 
@@ -185,7 +185,7 @@ def ollama_json_list(model: str, prompt: str, temperature=0.8):
         # fall back: split lines
         items = [s.strip("-• \n\t") for s in content.strip().splitlines() if s.strip()]
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
-        return [s for s in items if len(s) > 0][:30]
+        return [s for s in items if len(s) > 0][:25]
     try:
         arr = json.loads(m.group(0))
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
@@ -467,7 +467,7 @@ def ctx_from_players(players, prev_ctx=None, keywords=""):
     base = {
         "language": prev_ctx.get("language", "en"),
         "vibe": prev_ctx.get("vibe", "chaotic"),
-        "safety": prev_ctx.get("safety", "Party"),
+        "safety": prev_ctx.get("safety", "Dirty"),
         "time": prev_ctx.get("time", 10),
         "location": prev_ctx.get("location", "spain, outdoor, after dinner"),
         "names": names,
@@ -877,7 +877,7 @@ class App(tk.Tk):
             ],
             foreground=[
                 ("disabled", self.FG_MUTED),
-                ("!disabled", "#FFFFFF"),
+                ("!disabled", "#000000"),
             ],
         )
         # Buttons (for Finished / Go Back)
