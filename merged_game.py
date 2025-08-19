@@ -377,7 +377,7 @@ def rank_candidates_scored(cands_with_variant, ctx):
     texts = [t for _, t in cands_with_variant]
     r_preds = reward_predict(texts)
     have_reward = any(p is not None for p in r_preds)
-     h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"], ctx.get("keywords_list")) for t in texts]
+    h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"], ctx.get("keywords_list")) for t in texts]
 
     try:
         l_scores = [llm_judge_score(t) for t in texts]
@@ -551,60 +551,75 @@ class Engine:
                     print("[Engine] get_top_dares error, falling back:", e)
                     ranked_kw, ranked_no = [], []
 
-                # Build selection
+                # Build selection with per-keyword coverage
                 selected = []
                 seen_texts = set()
 
-                # 1) take up to kw_quota that actually contain a keyword
-                for _, variant, text in ranked_kw:
-                    if len(selected) >= kw_quota:
-                        break
+                def add_item(variant, text):
                     if not text:
-                        continue
+                        return False
                     key = text.lower().strip()
                     if key in seen_texts:
-                        continue
-                    if contains_kw(text):
-                        selected.append((variant, text))
-                        seen_texts.add(key)
+                        return False
+                    selected.append((variant, text))
+                    seen_texts.add(key)
+                    return True
 
-                # 2) fill remainder from NON-keyword pool
+                def text_contains_kw(t, kw):
+                    return (t or "").lower().find(kw) != -1
+
+                # 1) Ensure coverage: at least one for each keyword (round-robin)
+                if kw_list and kw_quota > 0:
+                    for kw in kw_list:
+                        if len(selected) >= kw_quota:
+                            break
+                        # try from ranked_kw (already sorted best-first)
+                        took = False
+                        for _, variant, text in ranked_kw:
+                            if text_contains_kw(text, kw) and add_item(variant, text):
+                                took = True
+                                break
+                        # fallback: if none found for this kw, generate a small kw-specific batch
+                        if not took:
+                            try:
+                                local_ctx_single = ctx_from_players(self.players, self.ctx, kw)
+                                # small top_n is fine; we only need 1 good hit
+                                ranked_single = get_top_dares(local_ctx_single, top_n=12, include_seen=False)
+                                for _, variant, text in ranked_single:
+                                    if text_contains_kw(text, kw) and add_item(variant, text):
+                                        break
+                            except Exception as e:
+                                print(f"[Engine] keyword fallback for '{kw}' failed:", e)
+
+                # 2) Fill the remaining KW-quota with any keyword hits
+                if kw_quota > 0:
+                    for _, variant, text in ranked_kw:
+                        if len(selected) >= kw_quota:
+                            break
+                        if any(text_contains_kw(text, kw) for kw in kw_list):
+                            add_item(variant, text)
+
+                # 3) Fill remainder (up to total) with NON-keyword pool
                 for _, variant, text in ranked_no:
                     if len(selected) >= total:
                         break
-                    if not text:
-                        continue
-                    key = text.lower().strip()
-                    if key in seen_texts:
-                        continue
-                    selected.append((variant, text))
-                    seen_texts.add(key)
+                    add_item(variant, text)
 
-                # 3) still short? take more from KW pool even if they don't literally contain the keyword
+                # 4) Still short? take more from KW pool (even if repeats of same kw)
                 if len(selected) < total:
                     for _, variant, text in ranked_kw:
                         if len(selected) >= total:
                             break
-                        if not text:
-                            continue
-                        key = text.lower().strip()
-                        if key in seen_texts:
-                            continue
-                        selected.append((variant, text))
-                        seen_texts.add(key)
+                        add_item(variant, text)
 
-                # 4) last resort fallback: use get_next_question() loop
+                # 5) Last resort fallback: generate on the fly
                 while len(selected) < total:
                     q = self.get_next_question()
                     if not q or not q.get("text"):
                         break
                     variant = getattr(self, "_last_variant", "v4_spicy")
-                    text = q["text"]
-                    key = text.lower().strip()
-                    if key in seen_texts:
-                        continue
-                    selected.append((variant, text))
-                    seen_texts.add(key)
+                    add_item(variant, q["text"])
+
 
                 # Materialize into prefetched queue and update progress status
                 for variant, text in selected[:total]:
@@ -811,13 +826,13 @@ class App(tk.Tk):
 
         style.map("Accent.TButton",
                   background=[("disabled", self.ACCENT_A), ("active", self.ACCENT_A), ("!disabled", self.ACCENT)],
-                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#00000000")])
         style.map("Success.TButton",
                   background=[("disabled", self.OK_A), ("active", self.OK_A), ("!disabled", self.OK)],
-                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#00000000")])
         style.map("Secondary.TButton",
                   background=[("disabled", self.NEUTRAL_A), ("active", self.NEUTRAL_A), ("!disabled", self.NEUTRAL)],
-                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#FFFFFF")])
+                  foreground=[("disabled", self.FG_MUTED), ("!disabled", "#00000000")])
 
         # tk Listbox (used on Load screen) – force dark with light text
         self.option_add("*Listbox.Background",       self.NEUTRAL)
@@ -1184,10 +1199,7 @@ class LoadingScreen(ttk.Frame):
             return self._fallback_wait()
 
         # Text-only feedback (no bar)
-        if loaded is not None and total:
-            self.status.config(text=f"Fetched {loaded}/{total}")
-        else:
-            self.status.config(text="Fetching…")
+        self.status.config(text="Fetching…")
 
         if done:
             return self._proceed_to_question()
