@@ -261,6 +261,62 @@ def pick_best(cands, ctx):
     fused.sort(reverse=True, key=lambda x:x[0])
     return fused[0][1]
 
+def rank_candidates_scored(variant_text_pairs, ctx):
+    """
+    Input: [(variant, text), ...]
+    Output: [(score, variant, text)] sorted desc by score.
+    Uses the same scoring blend as pick_best().
+    """
+    texts = [t for _, t in variant_text_pairs]
+    r_preds = reward_predict(texts)
+    have_reward = any(p is not None for p in r_preds)
+    h_scores = [heuristic_score(t, ctx["vibe"], ctx["names_list"]) for t in texts]
+    try:
+        llm_scores = [llm_judge_score(t) for t in texts]
+    except Exception:
+        llm_scores = [0.5] * len(texts)
+
+    ranked = []
+    for i, (variant, text) in enumerate(variant_text_pairs):
+        rp = r_preds[i] if have_reward and r_preds[i] is not None else 0.5
+        hs = h_scores[i]
+        ls = llm_scores[i]
+        score = (0.55 * rp + 0.25 * ls + 0.20 * (hs / 2.0))
+        ranked.append((score, variant, text))
+    ranked.sort(reverse=True, key=lambda x: x[0])
+    return ranked
+
+
+# ------- NEW: get the top-N dares across variants -------
+def get_top_dares(ctx, top_n=25, per_variant_limit=12, include_seen=False):
+    """
+    Generate candidates from all prompt variants, rank them, and return the best top_n.
+    Returns: [(score, variant, text)]
+    """
+    print("get_top_dares started at: ", datetime.utcnow().isoformat())
+    pool = []
+    for name, tmpl, temp in VARIANTS:
+        cands = generate_candidates(ctx, name, tmpl, temp)
+        if include_seen and len(cands) < top_n:
+            raw = ollama_json_list(GEN_MODEL, render(tmpl, ctx), temperature=temp)
+            more = [s.strip() for s in raw if isinstance(s, str) and s.strip() and is_safe(s)]
+            cands = list({*cands, *more})  # union dedupe
+        pool.extend((name, t) for t in cands)
+
+    # de-dup across variants
+    seen_texts = set()
+    uniq = []
+    for variant, text in pool:
+        key = text.lower().strip()
+        if key not in seen_texts:
+            seen_texts.add(key)
+            uniq.append((variant, text))
+
+    ranked = rank_candidates_scored(uniq, ctx)
+    print("get_top_dares ended at: ", datetime.utcnow().isoformat())
+    return ranked[:top_n]  # [(score, variant, text)]
+
+
 def thompson_pick(weights):
     best, name = None, None
     for k,v in weights.items():
@@ -342,22 +398,54 @@ class Engine:
                 return  # already running
             total = max(1, int(total or 1))
             self._fetch_status = {"loaded": 0, "total": total, "percent": 0.0,
-                                  "message": "Starting…", "done": False, "error": None}
+                                "message": "Starting…", "done": False, "error": None}
 
         def _worker():
             try:
-                for _ in range(total):
-                    q = self.get_next_question()
-                    with self._fetch_lock:
-                        if q:
-                            self._prefetched.append(q)
+                # Prefer a single ranked batch using get_top_dares
+                try:
+                    local_ctx = ctx_from_players(self.players, self.ctx, self.last_keywords)
+                    ranked = get_top_dares(local_ctx, top_n=total, include_seen=False)
+                except Exception as e:
+                    print("[Engine] get_top_dares error, falling back to single fetch loop:", e)
+                    ranked = None
+
+                if ranked:
+                    # ranked: [(score, variant, text)]
+                    for _, variant, text in ranked:
+                        if not text:
+                            continue
+                        # mark seen
+                        seen = load_seen()
+                        key = text.lower()
+                        if key not in seen:
+                            seen.add(key); save_seen(seen)
+                        # build question
+                        self._qid_counter += 1
+                        qid = f"q{self._qid_counter}_{int(time.time())}"
+                        with self._fetch_lock:
+                            self._prefetched.append({"id": qid, "text": text, "variant": variant})
                             self._fetch_status["loaded"] += 1
-                            t = self._fetch_status["total"] or total
+                            t = self._fetch_status["total"]
                             self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
                             self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
-                        else:
-                            self._fetch_status["message"] = "No question returned."
-                            break
+                    # finished
+                else:
+                    # Fallback: call get_next_question() total times
+                    for _ in range(total):
+                        q = self.get_next_question()
+                        with self._fetch_lock:
+                            if q:
+                                # attach variant info from last generation
+                                q["variant"] = getattr(self, "_last_variant", "v4_spicy")
+                                self._prefetched.append(q)
+                                self._fetch_status["loaded"] += 1
+                                t = self._fetch_status["total"] or total
+                                self._fetch_status["percent"] = (self._fetch_status["loaded"] * 100.0) / t
+                                self._fetch_status["message"] = f"Fetched {self._fetch_status['loaded']}/{t}"
+                            else:
+                                self._fetch_status["message"] = "No question returned."
+                                break
             except Exception as e:
                 with self._fetch_lock:
                     self._fetch_status["error"] = str(e)
@@ -375,11 +463,19 @@ class Engine:
             return dict(self._fetch_status)
 
     def consume_prefetched_question(self):
-        """Pop one prefetched question if available."""
+        """Pop one prefetched question if available and set last_* for feedback."""
         with self._fetch_lock:
             if self._prefetched:
-                return self._prefetched.pop(0)
+                item = self._prefetched.pop(0)
+            else:
+                item = None
+        if item:
+            # keep last_* in sync so submit_feedback uses the correct variant/text
+            self._last_text = item.get("text")
+            self._last_variant = item.get("variant", "v4_spicy")
+            return {"id": item.get("id"), "text": item.get("text")}
         return None
+
 
 
     def get_next_question(self):
