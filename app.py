@@ -23,7 +23,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULTS = dict(
     language="en",
     vibe="chaotic",            # chill | silly | chaotic
-    safety="Party",             # PG | PG13 | Party
+    safety="Dirty",             # PG | PG13 | Party | Dirty
     time=10,                  # minutes
     location="spain, outdoor, after dinner",
     names="Robin,Philipp,Marvin,Daniel,Lex,Tiberio,Sven,Leon,Lorenz",
@@ -39,7 +39,7 @@ Constraints:
 - Single sentence, concrete action, funny and friendly.
 - Remember these shall be dares, which you are not willing to do.
 - You shall mention a random player name from: {names}.
-Return a JSON array of exactly 40 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
+Return a JSON array of exactly 30 distinct dares starting with "[name] What are the odds you ..." (strings only)."""
 
 PROMPT_SPICY = "Favor dares which need more willingness and are harder to do. These shall be more spicy and can involve interactions with strangers."
 
@@ -83,7 +83,7 @@ def ollama_json_list(model: str, prompt: str, temperature=0.8):
         # fall back: split lines
         items = [s.strip("-• \n\t") for s in content.strip().splitlines() if s.strip()]
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
-        return [s for s in items if len(s) > 0][:40]
+        return [s for s in items if len(s) > 0][:30]
     try:
         arr = json.loads(m.group(0))
         print("ollama_json_list ended at: ", datetime.utcnow().isoformat())
@@ -447,6 +447,7 @@ def batch_generate(ctx, weights, total=150, allow_seen=False, seed=None):
 
     while len(bag) < total and attempts < cap_attempts:
         attempts += 1
+        print(f"[progress] {len(bag)}/{total} dares collected after {attempts} attempts")
         variant = random.choices(names, weights=probs, k=1)[0]
         # find variant template
         tmpl, temp = None, 0.9
@@ -474,9 +475,10 @@ def batch_generate(ctx, weights, total=150, allow_seen=False, seed=None):
             score = (0.55*rp + 0.25*ls + 0.20*(hs/2.0))
             ranked.append((score, variant, t))
         ranked.sort(reverse=True, key=lambda x: x[0])
+        print(f"[debug] Got {len(ranked)} candidates from {variant}, best score={ranked[0][0]:.3f}")
 
         # take top few each loop
-        for _, var, t in ranked[:6]:
+        for _, var, t in ranked[:15]:
             key = t.lower()
             if not allow_seen and key in seen_global:
                 continue
@@ -515,7 +517,7 @@ def main():
                     help="play = one dare; train-reward = fit local scorer; make-pack = batch export")
     ap.add_argument("--language", default=DEFAULTS["language"])
     ap.add_argument("--vibe", default=DEFAULTS["vibe"], choices=["chill","silly","chaotic"])
-    ap.add_argument("--safety", default=DEFAULTS["safety"], choices=["PG","PG13","Party"])
+    ap.add_argument("--safety", default=DEFAULTS["safety"], choices=["PG","PG13","Party","Dirty"])
     ap.add_argument("--time", type=int, default=DEFAULTS["time"])
     ap.add_argument("--location", default=DEFAULTS["location"])
     ap.add_argument("--names", default=DEFAULTS["names"], help="Comma-separated names")
